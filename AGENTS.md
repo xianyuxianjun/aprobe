@@ -15,7 +15,11 @@
 
 这七条是项目的全部价值所在。**放松其中任何一条，项目就退化成"会发请求的 LLM 脚本"**。
 
-1. **模型不接触网络。** 生成阶段只能读规范、写用例文件；网络出口只存在于确定性的执行阶段，且只接受用例文件里已存在的 `case_id`。（ADR-0001）
+1. **模型不接触测试目标。** 生成阶段只能读规范、写用例文件；通往**被测目标**的网络出口只存在于确定性的执行阶段（`runner.TestRunner`），且只接受用例文件里已存在的 `case_id`。（ADR-0001）
+   项目里只有两条网络出口，它们作用域不同且互不交叉：
+   - `runner.TestRunner` → 被测目标，受 TargetPolicy 约束；
+   - `model_client` → 模型端点，只由 `APROBE_MODEL_BASE_URL` 配置。
+   模型客户端拿不到目标地址，TestRunner 也从不与模型端点对话。
 2. **判定不由模型做出。** 通过/失败只来自声明式 Assertion 的确定性求值。无法求值只能是「无法判定」，**不允许退化成「通过」**。
 3. **权威事实来源是自有 Trace。** 编排层（LangGraph）的中间状态只用于流转控制，不参与回放、评估或结论推导。（ADR-0002）
 4. **降级模式与 Agent 模式共用同一条流程。** 同一个规划器 seam、同一套注册工具、同一份 Test Case 结构。（ADR-0003）
@@ -33,11 +37,12 @@
 
 | Seam | 位置 | 现有 adapter | 状态 |
 |---|---|---|---|
-| 规划器 | `generator.generate_cases` | 确定性生成 | **假想中**。M1 的 LangGraph 循环成为第二个 adapter 时才变真 |
-| 网络出口 | `runner.TestRunner` | httpx | 真实且唯一。**任何新增网络调用都必须经由它** |
+| 规划器 | `planner.plan` | 确定性生成 / Agent 循环 | **真实**（ADR-0003）。第三个 adapter 需要时再加 |
+| 模型端点 | `model_client` | OpenAI-compatible / 脚本回放 | 真实。它是**唯一**能访问模型端点的模块 |
+| 网络出口 | `runner.TestRunner` | httpx | 真实且唯一。**任何新增的、面向被测目标的网络调用都必须经由它** |
 | 用例文件 | `cases.load_case_file` / `dump_case_file` | YAML 文件 | 真实。它是审批载体（ADR-0001），格式变更必须先读该 ADR |
 | 权威轨迹 | `trace.TraceStore` | SQLite | 真实 |
-| 工具注册表 | M1 引入 | 暂无 | 必须与传输无关，两种模式共用（ADR-0003） |
+| 工具注册表 | `tools.ToolRegistry` | 6 个只读/写内存工具 | 真实，与传输无关（ADR-0003），两种模式共用 |
 
 ### 必须保持深的模块
 
@@ -48,6 +53,8 @@
 - `specification`：`load_specification` + `Specification.resolve` / `schema_document`。JSON Pointer、转义规则、`$ref` 打包全在这里，是**唯一**的 schema 解析入口。
 - `runner.TestRunner.execute`：一个方法产出完整 `TestRun`，永不抛异常。**这是刻意的深度，不是疏忽**——见下面「禁止的模式」。
 - `policy.TargetPolicy`：两个方法，背后是允许范围语义、只读默认、userinfo 与协议校验。
+- `tools.ToolRegistry`：`tool_declarations()` + `call()` 两个入口，背后是参数 schema 校验、错误不抛异常、以及“工具失败也是事实”的约定。新增工具是对的，新增“能发请求”的工具不是。
+- `planner.plan`：一个函数、两个 adapter。它同时是 ADR-0003 的代码形态。
 
 ### 适配器与词汇
 

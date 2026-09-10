@@ -16,11 +16,21 @@ from .cases import dump_case_file, load_case_file, operations_by_id, order_cases
 from .config import DEFAULT_CONFIG_NAME, Config, load_config
 from .errors import AprobeError, CaseFileError, ConfigError, ExitCode, SpecError
 from .generator import generate_cases
-from .models import APROBE_VERSION, DETERMINISTIC_PLANNER_VERSION, RunProvenance, TestRun
+from .models import (
+    APROBE_VERSION,
+    AgentBudget,
+    RunProvenance,
+    TerminationReason,
+    TestCase,
+    TestRun,
+)
+from .model_client import from_environment
+from .planner import plan, planner_label
 from .policy import TargetPolicy
 from .report import RENDERERS, ReportMeta, gate_exit_code, summarize
 from .runner import CredentialProvider, TestRunner
 from .specification import load_specification
+from .tools import history_from_runs
 from .trace import TraceStore
 
 
@@ -62,25 +72,72 @@ def cmd_generate(args: argparse.Namespace) -> int:
     if out is None:
         out = base / "cases" / "aprobe.yaml"
 
-    if out.exists() and not args.force:
-        raise CaseFileError(
-            f"{out} 已存在。用例文件是审批载体（ADR-0001），aprobe 不静默覆盖它；确认后请加 --force"
-        )
+    existing: list[TestCase] = []
+    if out.exists():
+        if not args.force:
+            raise CaseFileError(
+                f"{out} 已存在。用例文件是审批载体（ADR-0001），aprobe 不静默覆盖它；"
+                "确认 diff 后请加 --force（已有用例优先，新产物不会替换它们）"
+            )
+        existing = load_case_file(out)
 
     specification = load_specification(spec_path)
-    result = generate_cases(specification)
+
+    store: TraceStore | None = None
+    history: dict[str, list[dict[str, str]]] = {}
+    if config is not None:
+        store = TraceStore(config.resolve(base, config.trace_db))
+        history = history_from_runs(store.list_runs())
+
+    model = from_environment(dict(os.environ)) if args.mode in ("agent", "auto") else None
+    budget = AgentBudget(
+        max_steps=args.max_steps,
+        max_tokens=args.max_tokens,
+        max_ms=int(args.max_seconds * 1000),
+    )
+    result = plan(
+        specification,
+        mode=args.mode,
+        existing_cases=existing,
+        history=history,
+        budget=budget,
+        model=model,
+    )
     dump_case_file(out, result.cases)
 
+    agent_run = result.agent_run
+    if store is not None and agent_run is not None:
+        store.record_agent_run(agent_run)
+
+    added = len(result.cases) - len(existing)
     print(f"规范：{specification.title} {specification.version}（{len(specification.operations)} 个 Operation）")
-    print(f"降级模式生成 {len(result.cases)} 条用例 → {out}")
-    for case in result.cases:
-        print(f"  - {case.id}  ← {case.request.method} {case.request.path}")
+    print(f"规划器：{agent_run.mode if agent_run else args.mode}（{args.mode}）")
+    print(f"用例：{len(result.cases)} 条（新增 {added}）→ {out}")
+    for case in result.cases[len(existing) :]:
+        print(f"  + {case.id}  ← {case.request.method} {case.request.path} [{case.origin}]")
     if result.needs_input:
-        print(f"需要人工输入的 {len(result.needs_input)} 个 Operation（未生成用例）：")
+        print(f"未被覆盖的 {len(result.needs_input)} 个 Operation（未生成用例）：")
         for item in result.needs_input:
             print(f"  - {item.method} {item.path}：{item.reason}")
     for note in result.ignored:
         print(f"  规范中被忽略的部分：{note}")
+
+    if agent_run is not None:
+        print(
+            f"Agent 循环：{agent_run.consumed_steps} 步，{agent_run.consumed_tokens} token，"
+            f"{agent_run.consumed_ms}ms，终止原因 {agent_run.termination_reason.value}"
+        )
+        for note in agent_run.notes:
+            print(f"  · {note}")
+        if store is not None and config is not None:
+            print(f"Agent 轨迹已记录到 {config.resolve(base, config.trace_db)}")
+        if agent_run.termination_reason in (
+            TerminationReason.BUDGET_EXHAUSTED,
+            TerminationReason.PLANNER_FAILED,
+        ):
+            # 规划没跑完既不是通过也不是失败，用「无法判定」的退码让流水线能区分
+            return ExitCode.INCONCLUSIVE
+
     if not result.cases:
         raise CaseFileError("没有生成任何用例，请检查规范中的 2xx 响应声明")
     return ExitCode.OK
@@ -137,7 +194,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         spec_title=specification.title,
         spec_version=specification.version,
         cases_file=str(cases_path),
-        planner=DETERMINISTIC_PLANNER_VERSION,
+        planner=planner_label(cases),
     )
 
     runs: list[TestRun] = []
@@ -207,7 +264,16 @@ def build_parser() -> argparse.ArgumentParser:
     generate = subparsers.add_parser("generate", help="以降级模式（不调用模型）生成用例文件")
     add_common(generate)
     generate.add_argument("--out", default=None, help="输出路径，默认写到配置中的 cases")
-    generate.add_argument("--force", action="store_true", help="允许覆盖已存在的用例文件")
+    generate.add_argument("--force", action="store_true", help="允许写入已存在的用例文件（已有用例优先保留）")
+    generate.add_argument(
+        "--mode",
+        choices=("degraded", "agent", "auto"),
+        default="degraded",
+        help="degraded 不调用模型；agent 用有界 Agent 循环；auto 有模型走 agent，否则降级",
+    )
+    generate.add_argument("--max-steps", type=int, default=8, help="Agent 循环步数上限")
+    generate.add_argument("--max-tokens", type=int, default=24000, help="Agent 循环 token 上限")
+    generate.add_argument("--max-seconds", type=float, default=120.0, help="Agent 循环时长上限（秒）")
     generate.set_defaults(func=cmd_generate)
 
     validate = subparsers.add_parser("validate", help="离线校验用例文件（不联网、不调用模型）")

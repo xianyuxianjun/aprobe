@@ -12,5 +12,16 @@ Status: accepted
 Consequences：
 
 - 审批的载体是 Git 历史，可 diff、可 review、可回滚。
-- 生成阶段的安全性可以一句话证明：*模型只能提出用例，不能发请求*。
+- 生成阶段的安全性可以一句话证明：*模型只能提出用例，不能向被测目标发请求*。
 - 代价：在用例文件被接受之前，系统无法通过"试一下"来获得关于接口实际行为的知识；用例设计的准确性只能靠规范本身，泛化能力因此受限。这是明知的取舍。
+
+## 补充（M1）
+
+接入模型客户端后需要把"网络出口"说得更精确：项目的网络出口有两条，作用域不同且互不交叉。
+
+- `runner.TestRunner` → **被测目标**，受 TargetPolicy 约束；
+- `model_client` → **模型端点**，由 `APROBE_MODEL_BASE_URL` 配置，拿不到目标地址。
+
+因此本 ADR 的原意不变：生成阶段没有通往**被测目标**的出口。已被测试守住：
+`tests/test_agent_loop.py::test_loop_never_receives_the_target_address` 与
+`tests/test_agent_integration.py::test_model_endpoint_receives_tool_declarations_and_no_target`。

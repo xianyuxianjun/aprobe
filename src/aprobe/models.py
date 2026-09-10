@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -33,6 +33,7 @@ class TerminationReason(str, enum.Enum):
     REQUEST_FAILED = "request_failed"
     UNEVALUABLE = "unevaluable"
     BUDGET_EXHAUSTED = "budget_exhausted"
+    PLANNER_FAILED = "planner_failed"
 
 
 class AssertionKind(str, enum.Enum):

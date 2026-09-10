@@ -19,8 +19,9 @@ def test_generate_needs_only_a_spec(tmp_path: Path, spec_path: Path, capsys) -> 
     assert code == 0
     assert out.is_file()
     output = capsys.readouterr().out
-    assert "降级模式生成 3 条用例" in output
-    assert "需要人工输入的 3 个 Operation" in output
+    assert "用例：3 条（新增 3）" in output
+    assert "规划器：degraded" in output
+    assert "未被覆盖的 3 个 Operation" in output
 
 
 def test_generate_refuses_to_overwrite_the_approval_carrier(tmp_path: Path, spec_path: Path, capsys) -> None:
