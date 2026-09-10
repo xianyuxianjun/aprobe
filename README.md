@@ -39,7 +39,8 @@
 | 模型客户端（OpenAI-compatible + 脚本回放两个 adapter） | 已实现 | `pytest tests/test_agent_integration.py` |
 | Agent Step / Tool Call 轨迹与 token 成本 | 已实现 | 同上 |
 | 离线评估与量化指标（判定准确率、假阳/假阴、无依据结论率、回放一致率） | 已实现 | `pytest tests/test_evaluation.py`、`aprobe evaluate` |
-| 诊断循环（失败归因：接口缺陷 / 用例缺陷 / 环境问题 / 无法判定） | **开发中**（M3） | — |
+| 诊断循环（失败归因：接口缺陷 / 用例缺陷 / 环境问题 / 无法判定） | 已实现（需要模型端点，**没有降级替代**） | `pytest tests/test_diagnosis.py` |
+| 归因进入报告（与结论分开陈述） | 已实现 | `aprobe report --format md` |
 
 ## 实测指标
 
@@ -87,9 +88,21 @@ aprobe run --config aprobe.yaml --json reports/report.json --junit reports/junit
 # 5) 在评估基准上回放标注样例集，得到可比较的指标
 aprobe evaluate --config aprobe.yaml --suite eval/petstore-conformant.yaml --repeat 2
 
-# 6) 从 Trace 重新导出报告
+# 6) 从 Trace 重新导出报告（含失败归因段落）
 aprobe report --config aprobe.yaml --format json
 ```
+
+失败归因的完整演示（违约基准 + 模型端点替身，不需要真实密钥）：
+
+```bash
+python mock/mock_service.py --scenario violating --port 8081
+python mock/model_server.py --script eval/diagnose-demo.json --port 8090
+aprobe run --config aprobe.yaml --target http://127.0.0.1:8081 --fail-on none
+APROBE_MODEL_BASE_URL=http://127.0.0.1:8090 APROBE_MODEL=mock-model aprobe diagnose --config aprobe.yaml
+aprobe report --config aprobe.yaml --format md
+```
+
+`mock/model_server.py` 只是 chat/completions 的替身，**它不是被测目标**；把两者混为一谈会破坏 ADR-0001 的边界。
 
 跑一遍"故意违约"的场景，可以看到契约违约会被判定为失败：
 
@@ -106,7 +119,10 @@ aprobe run --config aprobe.yaml --target http://127.0.0.1:8081 --fail-on none
 | `validate` | 校验用例文件与规范一致 | 否 | 否 |
 | `run` | 确定性地执行用例并记录 Trace | 是（仅允许范围内的目标） | 否 |
 | `evaluate` | 在评估基准上回放标注样例集并输出指标 | 是（并先确认基准身份） | 否 |
-| `report` | 从 Trace 导出报告 | 否 | 否 |
+| `diagnose` | 对失败或无法判定的运行做归因 | 否 | 是（必须） |
+| `report` | 从 Trace 导出报告（含归因段落） | 否 | 否 |
+
+需要模型的两处，只有这里：`generate --mode agent` 与 `diagnose`。`run`、`validate`、`evaluate`、`report` **永远不调模型**。
 
 Agent 模式的环境变量（不配置就一律走降级模式）：
 
@@ -122,7 +138,7 @@ APROBE_MODEL_API_KEY=...                         # 只从环境变量读，不�
 |---|---|
 | 0 | 全部通过 |
 | 1 | 至少一条 Assertion 失败 |
-| 2 | 没有失败，但存在「无法判定」，或规划循环未完成（预算耗尽 / 模型端点失败） |
+| 2 | 没有失败，但存在「无法判定」、规划循环未完成，或部分运行没有得到归因 |
 | 3 | 用例文件或配置非法，未发出任何请求 |
 | 4 | 目标被策略拒绝（不在允许范围、非 http/https、或未开启的写操作） |
 
@@ -145,19 +161,28 @@ APROBE_MODEL_API_KEY=...                         # 只从环境变量读，不�
 ```
 src/aprobe/
   specification.py   OpenAPI 解析与 $ref 打包（唯一 schema 解析入口）
-  models.py          领域模型：Operation / TestCase / Assertion / TestRun / Verdict
-  cases.py           用例文件读写、校验、确定性排序
+  models.py          领域模型：Operation / TestCase / Assertion / TestRun / AgentRun / FailureAttribution
+  cases.py           用例文件读写、校验、确定性排序（审批载体）
   generator.py       降级模式的确定性用例生成
+  planner.py         规划器 seam：确定性生成与 Agent 循环两个 adapter
+  tools.py           与传输无关的工具注册表（生成用的 6 个 + 共享的只读工具）
+  model_client.py    模型端点端口与两个 adapter（OpenAI-compatible / 脚本回放）
+  agent_loop.py      有界多步循环（LangGraph 薄图，生成与诊断共用）
+  diagnosis.py       失败归因：只读工具、证据强制、四个归因类别
+  evaluation.py      离线评估与指标（纯计算，不碰 I/O）
   assertions.py      声明式断言求值（不抛异常、不调用模型）
   policy.py          被测目标策略
-  runner.py          唯一的网络出口
-  trace.py           权威轨迹持久化
-  report.py          Markdown / JSON / JUnit 导出
+  runner.py          唯一通往被测目标的网络出口
+  trace.py           权威轨迹持久化（runs / agent_runs / attributions）
+  report.py          Markdown / JSON / JUnit 导出与 CI 门禁退出码
   cli.py             命令行与退出码
-mock/mock_service.py 版本化评估基准
+mock/
+  mock_service.py    版本化评估基准（被测目标）
+  model_server.py    模型端点替身（不是被测目标）
+eval/                评估样例集与演示脚本
 cases/petstore.yaml  示例用例文件（含人工补写的路径参数用例）
-examples/petstore.yaml
 docs/adr/            架构决策记录（0001 审批载体、0002 权威轨迹、0003 模式共用同一条流程）
+CONTEXT.md           术语表与领域边界
 AGENTS.md            架构地图与设计理念：接手任务前先读
 CONTEXT.md           术语表与领域边界
 ```

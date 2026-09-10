@@ -28,6 +28,53 @@ from .tools import PlanContext, ToolRegistry
 
 MODES = ("degraded", "agent", "auto")
 
+GENERATE_PROMPT_VERSION = "generate-0.0.1"
+
+GENERATE_SYSTEM_PROMPT = """你是接口契约测试的用例设计者。你的产出是一份可被人审阅的测试用例集合。
+
+你能做的事只有三件：查询 OpenAPI 规范、查看已有用例与历史结论、提交测试用例。
+你不能发起任何网络请求，也不能访问被测服务——你只能依据规范写用例。
+
+必须遵守：
+1. 只能引用规范中真实存在的 operation_id、路径与响应码，不得编造。
+2. 用例只声明“哪个 Operation 的哪个响应”（json_schema 断言用 response 字段），
+   不要写 JSON Pointer 或任何规范内部结构。
+3. 每条用例至少有一条断言。断言是确定性的：status / json_schema / json_path / header / response_time_ms。
+   其中 json_path 支持 equals、equals_path、length_equals_path、exists、type、contains、
+   length_equals、min_length、max_length。
+4. 需要路径参数或请求体才能调用的 Operation，如果你无法从规范确定合法取值，就不要为它造用例——
+   留空比编造一个假 id 更有价值。
+5. 优先写能表达业务规则的断言（例如 total 必须等于 items 的条数），而不只是状态码。
+6. 提交被拒绝时，按返回的具体问题修正后重试；同一错误不要重复提交。
+7. 覆盖完之后，直接给出停止理由，不要再调用工具。
+
+最后一条回复不要带工具调用，用一句话说明你覆盖了什么、哪些你没有覆盖以及为什么。"""
+
+
+def build_generation_loop(registry: ToolRegistry, model, budget: AgentBudget | None = None):
+    """构造生成用途的循环：机制在 agent_loop，意图（提示词与开场白）在这里。"""
+    from .agent_loop import AgentLoop
+
+    return AgentLoop(
+        registry,
+        model,
+        system_prompt=GENERATE_SYSTEM_PROMPT,
+        initial_message=_initial_message(registry.context),
+        budget=budget,
+        prompt_version=GENERATE_PROMPT_VERSION,
+        mode="agent",
+    )
+
+
+def _initial_message(context: PlanContext) -> str:
+    covered = sorted(context.covered_operations())
+    return (
+        f"这是一份 OpenAPI 规范（{context.specification.title} {context.specification.version}），"
+        f"共 {len(context.specification.operations)} 个 Operation。"
+        f"用例文件中已有 {len(context.existing_cases)} 条用例，覆盖 {len(covered)} 个 Operation。\n"
+        "请先了解规范，再提交你为尚未覆盖的 Operation 设计的测试用例。"
+    )
+
 
 @dataclass
 class PlanResult:
@@ -110,14 +157,16 @@ def _plan_agent(
     model,
 ) -> PlanResult:
     try:
-        from .agent_loop import AgentLoop
+        from .agent_loop import AgentLoop  # noqa: F401
     except ImportError as exc:  # langgraph 是可选依赖
         raise ConfigError("agent 模式需要可选依赖：uv pip install -e '.[agent]'") from exc
 
     context = PlanContext(specification, existing_cases=existing, history=history)
-    outcome = AgentLoop(ToolRegistry(context), model, budget).run()
+    outcome = build_generation_loop(ToolRegistry(context), model, budget).run()
     cases, dropped = _merge(existing, context.submitted)
     agent_run = outcome.agent_run
+    agent_run.produced_case_ids = [case.id for case in context.submitted]
+    agent_run.notes.extend(context.rejected[:10])
     if dropped:
         agent_run.notes.append(f"与已有用例同 id，已丢弃：{', '.join(dropped)}")
     uncovered = _uncovered(specification, cases)

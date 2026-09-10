@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .errors import ExitCode
-from .models import RunProvenance, TerminationReason, TestRun, Verdict
+from .models import FailureAttribution, RunProvenance, TerminationReason, TestRun, Verdict
 
 
 @dataclass
@@ -49,7 +49,7 @@ def _meta_block(meta: ReportMeta) -> list[str]:
     ]
 
 
-def render_markdown(runs: list[TestRun], meta: ReportMeta) -> str:
+def render_markdown(runs: list[TestRun], meta: ReportMeta, attributions: list[FailureAttribution] | None = None) -> str:
     summary = summarize(runs)
     lines: list[str] = ["# aprobe 接口契约测试报告", "", "## 运行范围", "", *_meta_block(meta), ""]
     lines += [
@@ -95,19 +95,39 @@ def render_markdown(runs: list[TestRun], meta: ReportMeta) -> str:
             lines.append(f"- `{run.case_id}`：{run.verdict.value}（{run.termination_reason.value}）")
     else:
         lines.append("- 无")
+    lines += ["## 失败归因（模型建议，不改变任何结论）", ""]
+    if attributions:
+        for attribution in attributions:
+            lines += [
+                f"### `{attribution.case_id}` → {attribution.category.value}",
+                "",
+                f"- 理由：{attribution.reason}",
+                f"- 来自 run_id={attribution.run_id}，模型 {attribution.model or '未记录'}，"
+                f"提示版本 {attribution.prompt_version or '未记录'}",
+            ]
+            if attribution.suggested_fix:
+                lines.append(f"- 建议方向：{attribution.suggested_fix}")
+            if attribution.evidence:
+                lines.append("- 证据：")
+                lines += [f"  - {item}" for item in attribution.evidence]
+            lines.append("")
+    else:
+        lines += ["- 无（未运行诊断，或诊断没有给出带证据的归因）", ""]
     lines += [
         "",
         "## 声明",
         "",
         "本报告只覆盖上述用例文件中已确认的测试范围；结果不等于完整保证，",
         "未验证的部分不等于不存在问题。所有结论均来自确定性 Assertion 求值，",
-        "模型只参与用例设计与失败解释，不参与判定。",
+        "模型只参与用例设计与失败归因，不参与判定；归因是建议，不是结论。",
         "",
     ]
     return "\n".join(lines)
 
 
-def _runs_payload(runs: list[TestRun], meta: ReportMeta) -> dict[str, object]:
+def _runs_payload(
+    runs: list[TestRun], meta: ReportMeta, attributions: list[FailureAttribution] | None = None
+) -> dict[str, object]:
     provenance = meta.provenance
     return {
         "meta": {
@@ -122,14 +142,19 @@ def _runs_payload(runs: list[TestRun], meta: ReportMeta) -> dict[str, object]:
         },
         "summary": summarize(runs),
         "runs": [json.loads(run.model_dump_json()) for run in runs],
+        "attributions": [json.loads(item.model_dump_json()) for item in (attributions or [])],
     }
 
 
-def render_json(runs: list[TestRun], meta: ReportMeta) -> str:
-    return json.dumps(_runs_payload(runs, meta), ensure_ascii=False, indent=2)
+def render_json(
+    runs: list[TestRun], meta: ReportMeta, attributions: list[FailureAttribution] | None = None
+) -> str:
+    return json.dumps(_runs_payload(runs, meta, attributions), ensure_ascii=False, indent=2)
 
 
-def render_junit(runs: list[TestRun], meta: ReportMeta) -> str:
+def render_junit(
+    runs: list[TestRun], meta: ReportMeta, attributions: list[FailureAttribution] | None = None
+) -> str:
     summary = summarize(runs)
     suite = ElementTree.Element(
         "testsuite",

@@ -320,6 +320,35 @@ class TestRun(BaseModel):
     provenance: RunProvenance = Field(default_factory=RunProvenance)
 
 
+class FailureCategory(str, enum.Enum):
+    """一次失败归因的类别。它是模型建议，不是 Verdict。"""
+
+    INTERFACE_DEFECT = "interface_defect"
+    CASE_DEFECT = "case_defect"
+    ENVIRONMENT = "environment"
+    INCONCLUSIVE = "inconclusive"
+
+
+class FailureAttribution(BaseModel):
+    """对一条失败 Test Run 的归因。
+
+    边界：它不修改 TestRun 的 Verdict，也不会去改用例文件。它只是对“为什么会失败”
+    的一个带证据的提议，供人判断。
+    """
+
+    run_id: str
+    case_id: str
+    operation_id: str
+    category: FailureCategory
+    reason: str
+    evidence: list[str] = Field(default_factory=list)
+    suggested_fix: str = ""
+    model: str = ""
+    prompt_version: str = ""
+    agent_run_id: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class ToolCallRecord(BaseModel):
     """Agent 对某个已注册工具的一次调用。它是执行事实，不是模型自述。"""
 
@@ -357,7 +386,7 @@ class AgentRun(BaseModel):
     """Agent 循环的权威轨迹。与 TestRun 分开保存：它描述“怎么想出来的”，不是“测出了什么”。"""
 
     run_id: str
-    mode: Literal["degraded", "agent"]
+    mode: Literal["degraded", "agent", "diagnose"]
     model: str = ""
     prompt_version: str = ""
     budget: AgentBudget = Field(default_factory=AgentBudget)

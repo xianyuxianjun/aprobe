@@ -14,7 +14,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from .models import AgentRun, TestRun
+from .models import AgentRun, FailureAttribution, TestRun
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -49,6 +49,16 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     payload            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_started_at ON agent_runs(started_at);
+
+CREATE TABLE IF NOT EXISTS attributions (
+    run_id      TEXT PRIMARY KEY,
+    case_id     TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    payload     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attributions_case_id ON attributions(case_id);
 """
 
 
@@ -109,6 +119,39 @@ class TraceStore:
             for row in self._select("runs", limit)
         ]
 
+    # ---- 归因：失败了是为什么（模型建议，不是 Verdict） ----
+
+    def record_attribution(self, attribution: FailureAttribution) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO attributions (
+                    run_id, case_id, operation_id, category, created_at, payload
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attribution.run_id,
+                    attribution.case_id,
+                    attribution.operation_id,
+                    attribution.category.value,
+                    attribution.created_at.isoformat(),
+                    attribution.model_dump_json(),
+                ),
+            )
+
+    def get_attribution(self, run_id: str) -> FailureAttribution | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM attributions WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return FailureAttribution.model_validate_json(row["payload"]) if row else None
+
+    def list_attributions(self, limit: int | None = None) -> list[FailureAttribution]:
+        return [
+            FailureAttribution.model_validate_json(row["payload"])
+            for row in self._select("attributions", limit, order_by="created_at")
+        ]
+
     # ---- AgentRun：怎么想出来的 ----
 
     def record_agent_run(self, agent_run: AgentRun) -> None:
@@ -144,8 +187,8 @@ class TraceStore:
             for row in self._select("agent_runs", limit)
         ]
 
-    def _select(self, table: str, limit: int | None) -> list[sqlite3.Row]:
-        query = f"SELECT payload FROM {table} ORDER BY started_at ASC, run_id ASC"
+    def _select(self, table: str, limit: int | None, order_by: str = "started_at") -> list[sqlite3.Row]:
+        query = f"SELECT payload FROM {table} ORDER BY {order_by} ASC, run_id ASC"
         params: tuple[object, ...] = ()
         if limit is not None:
             query += " LIMIT ?"

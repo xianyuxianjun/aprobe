@@ -96,44 +96,11 @@ class PlanContext:
         return {"operations": items, "total": len(items)}
 
     def get_operation(self, operation_id: str) -> dict[str, Any]:
-        operation = self.operations.get(operation_id)
-        if operation is None:
-            return {"error": f"规范中不存在 operation_id={operation_id}"}
-        return {
-            "operation_id": operation.operation_id,
-            "method": operation.method,
-            "path": operation.path,
-            "summary": operation.summary,
-            "security": operation.security,
-            "parameters": [
-                {
-                    "name": parameter.name,
-                    "in": parameter.location,
-                    "required": parameter.required,
-                    "schema": parameter.schema_,
-                }
-                for parameter in operation.parameters
-            ],
-            "request_body_required": operation.request_body_required,
-            "request_body_media_type": operation.request_body_media_type,
-            "responses": [
-                {
-                    "status": response.status,
-                    "description": response.description,
-                    "media_type": response.media_type,
-                    "has_json_schema": bool(response.schema_pointer),
-                }
-                for response in operation.responses
-            ],
-        }
+        return operation_payload(self.specification, operation_id)
 
     def get_response_schema(self, operation_id: str, status: str) -> dict[str, Any]:
         """返回契约里声明的响应结构。Agent 不需要知道 JSON Pointer 的存在。"""
-        try:
-            schema = self.specification.response_schema(operation_id, status)
-        except ValueError as exc:
-            return {"error": str(exc)}
-        return {"operation_id": operation_id, "status": status, "schema": schema}
+        return response_schema_payload(self.specification, operation_id, status)
 
     def list_existing_cases(self) -> dict[str, Any]:
         return {
@@ -185,9 +152,12 @@ class PlanContext:
 class ToolRegistry:
     """已注册工具的集合。输入输出都符合声明的结构，调用结果永远可序列化。"""
 
-    def __init__(self, context: PlanContext) -> None:
+    def __init__(self, context: Any, specs: list[ToolSpec] | None = None) -> None:
+        # context 可以是任何提供声明中用到的那些方法的对象；注册表本身与用途无关。
+        # specs 缺省为生成用途的工具集，诊断等其它用途可以注入自己的集合。
         self.context = context
-        self._specs: dict[str, ToolSpec] = {spec.name: spec for spec in _build_specs(context)}
+        source = specs if specs is not None else _build_specs(context)
+        self._specs: dict[str, ToolSpec] = {spec.name: spec for spec in source}
 
     @property
     def names(self) -> list[str]:
@@ -275,31 +245,7 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
             },
             handler=lambda args: context.list_operations(args.get("tag"), args.get("path_prefix")),
         ),
-        ToolSpec(
-            name="get_operation",
-            description="取一个 Operation 的完整契约：参数、请求体、已声明的响应与鉴权。",
-            parameters={
-                "type": "object",
-                "properties": {"operation_id": {"type": "string"}},
-                "required": ["operation_id"],
-                "additionalProperties": False,
-            },
-            handler=lambda args: context.get_operation(args["operation_id"]),
-        ),
-        ToolSpec(
-            name="get_response_schema",
-            description="取某个 Operation 某个响应码在契约中声明的响应结构，用于写出结构断言。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "operation_id": {"type": "string"},
-                    "status": {"type": "string", "description": "响应码，例如 200 或 default"},
-                },
-                "required": ["operation_id", "status"],
-                "additionalProperties": False,
-            },
-            handler=lambda args: context.get_response_schema(args["operation_id"], args["status"]),
-        ),
+        *spec_tool_specs(context),
         ToolSpec(
             name="list_existing_cases",
             description="列出用例文件中已有的用例，用于避免重复并保持风格一致。",
@@ -358,5 +304,79 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             handler=lambda args: context.submit_case({**args, "origin": "agent"}),
+        ),
+    ]
+
+
+# ---- 只依赖规范的只读工具：生成与诊断两种用途共用，边界因此只有一份 ----
+
+def operation_payload(specification: Specification, operation_id: str) -> dict[str, Any]:
+    operation = operations_by_id(specification).get(operation_id)
+    if operation is None:
+        return {"error": f"规范中不存在 operation_id={operation_id}"}
+    return {
+        "operation_id": operation.operation_id,
+        "method": operation.method,
+        "path": operation.path,
+        "summary": operation.summary,
+        "security": operation.security,
+        "parameters": [
+            {
+                "name": parameter.name,
+                "in": parameter.location,
+                "required": parameter.required,
+                "schema": parameter.schema_,
+            }
+            for parameter in operation.parameters
+        ],
+        "request_body_required": operation.request_body_required,
+        "request_body_media_type": operation.request_body_media_type,
+        "responses": [
+            {
+                "status": response.status,
+                "description": response.description,
+                "media_type": response.media_type,
+                "has_json_schema": bool(response.schema_pointer),
+            }
+            for response in operation.responses
+        ],
+    }
+
+
+def response_schema_payload(specification: Specification, operation_id: str, status: str) -> dict[str, Any]:
+    try:
+        schema = specification.response_schema(operation_id, status)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"operation_id": operation_id, "status": status, "schema": schema}
+
+
+def spec_tool_specs(queries: Any) -> list[ToolSpec]:
+    """`queries` 只需提供 get_operation / get_response_schema 两个方法。"""
+    return [
+        ToolSpec(
+            name="get_operation",
+            description="取一个 Operation 的完整契约：参数、请求体、已声明的响应与鉴权。",
+            parameters={
+                "type": "object",
+                "properties": {"operation_id": {"type": "string"}},
+                "required": ["operation_id"],
+                "additionalProperties": False,
+            },
+            handler=lambda args: queries.get_operation(args["operation_id"]),
+        ),
+        ToolSpec(
+            name="get_response_schema",
+            description="取某个 Operation 某个响应码在契约中声明的响应结构。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "operation_id": {"type": "string"},
+                    "status": {"type": "string", "description": "响应码，例如 200 或 default"},
+                },
+                "required": ["operation_id", "status"],
+                "additionalProperties": False,
+            },
+            handler=lambda args: queries.get_response_schema(args["operation_id"], args["status"]),
         ),
     ]

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -24,7 +25,9 @@ from .models import (
     TerminationReason,
     TestCase,
     TestRun,
+    Verdict,
 )
+from .diagnosis import diagnose
 from .model_client import from_environment
 from .planner import plan, planner_label
 from .policy import TargetPolicy
@@ -310,6 +313,74 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return ExitCode.OK
 
 
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    config, base, spec_path, cases_path = _load_context(args, require_config=True, require_cases=True)
+    assert config is not None and cases_path is not None
+
+    model = from_environment(dict(os.environ))
+    if model is None:
+        raise ConfigError(
+            "诊断需要模型端点（设置 APROBE_MODEL_BASE_URL 与 APROBE_MODEL）。"
+            "归因是判断而不是计算，因此没有降级模式的替代实现"
+        )
+
+    specification = load_specification(spec_path)
+    cases = {case.id: case for case in load_case_file(cases_path)}
+    store = TraceStore(config.resolve(base, config.trace_db))
+
+    if args.run:
+        subject = store.get(args.run)
+        if subject is None:
+            raise CaseFileError(f"Trace 中没有 run_id={args.run}")
+        subjects = [subject]
+    else:
+        subjects = [run for run in store.list_runs() if run.verdict is not Verdict.PASSED]
+    if not subjects:
+        print("没有任何需要归因的运行（全部通过）。")
+        return ExitCode.OK
+
+    all_runs = store.list_runs()
+    budget = AgentBudget(
+        max_steps=args.max_steps, max_tokens=args.max_tokens, max_ms=int(args.max_seconds * 1000)
+    )
+    attributions = []
+    missing = 0
+    for run in subjects:
+        related = [
+            other for other in all_runs if other.operation_id == run.operation_id and other.run_id != run.run_id
+        ]
+        agent_run, attribution = diagnose(
+            specification,
+            run,
+            model=model,
+            case=cases.get(run.case_id),
+            related_runs=related,
+            budget=budget,
+        )
+        store.record_agent_run(agent_run)
+        if attribution is None:
+            missing += 1
+            print(f"{run.case_id}: 没有得到归因（{agent_run.termination_reason.value}）")
+            for note in agent_run.notes:
+                print(f"  · {note}")
+            continue
+        store.record_attribution(attribution)
+        attributions.append(attribution)
+        print(f"{run.case_id}: {attribution.category.value} —— {attribution.reason}")
+        for item in attribution.evidence:
+            print(f"  · 证据：{item}")
+        if attribution.suggested_fix:
+            print(f"  · 方向：{attribution.suggested_fix}")
+
+    print(f"归因 {len(attributions)}/{len(subjects)} 条，{missing} 条没有依据")
+    print(f"Trace 已记录到 {config.resolve(base, config.trace_db)}")
+    if args.json:
+        payload = [json.loads(item.model_dump_json()) for item in attributions]
+        print(f"归因已写入 {_write(Path(args.json), json.dumps(payload, ensure_ascii=False, indent=2))}")
+    # 没有依据的归因既不是通过也不是失败：用「无法判定」的退码让流水线能区分
+    return ExitCode.OK if missing == 0 else ExitCode.INCONCLUSIVE
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     config, base, spec_path, cases_path = _load_context(args, require_config=True, require_cases=False)
     assert config is not None
@@ -326,8 +397,9 @@ def cmd_report(args: argparse.Namespace) -> int:
     if not runs:
         raise CaseFileError("Trace 中还没有任何运行记录")
 
+    attributions = store.list_attributions()
     meta = ReportMeta.from_runs(runs)
-    content = RENDERERS[args.format](runs, meta)
+    content = RENDERERS[args.format](runs, meta, attributions)
     if args.out:
         print(f"报告已写入 {_write(Path(args.out), content)}")
     else:
@@ -386,6 +458,15 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--repeat", type=int, default=1, help="回放轮数，用于计算回放一致率")
     evaluate.add_argument("--json", default=None, help="导出评估结果的路径")
     evaluate.set_defaults(func=cmd_evaluate)
+
+    diagnose = subparsers.add_parser("diagnose", help="对失败或无法判定的运行做归因（需要模型端点）")
+    add_common(diagnose)
+    diagnose.add_argument("--run", default=None, help="只归因指定 run_id；缺省归因全部未通过的运行")
+    diagnose.add_argument("--max-steps", type=int, default=6, help="归因循环步数上限")
+    diagnose.add_argument("--max-tokens", type=int, default=24000, help="归因循环 token 上限")
+    diagnose.add_argument("--max-seconds", type=float, default=90.0, help="归因循环时长上限（秒）")
+    diagnose.add_argument("--json", default=None, help="导出归因的路径")
+    diagnose.set_defaults(func=cmd_diagnose)
 
     report = subparsers.add_parser("report", help="从 Trace 导出报告")
     add_common(report)

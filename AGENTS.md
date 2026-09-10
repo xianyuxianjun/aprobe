@@ -20,6 +20,7 @@
    - `runner.TestRunner` → 被测目标，受 TargetPolicy 约束；
    - `model_client` → 模型端点，只由 `APROBE_MODEL_BASE_URL` 配置。
    模型客户端拿不到目标地址，TestRunner 也从不与模型端点对话。
+   只有 `generate --mode agent` 与 `diagnose` 会用到模型端点；`run`、`validate`、`evaluate`、`report` **永远不调模型**。
 2. **判定不由模型做出。** 通过/失败只来自声明式 Assertion 的确定性求值。无法求值只能是「无法判定」，**不允许退化成「通过」**。
 3. **权威事实来源是自有 Trace。** 编排层（LangGraph）的中间状态只用于流转控制，不参与回放、评估或结论推导。（ADR-0002）
 4. **降级模式与 Agent 模式共用同一条流程。** 同一个规划器 seam、同一套注册工具、同一份 Test Case 结构。（ADR-0003）
@@ -42,7 +43,8 @@
 | 网络出口 | `runner.TestRunner` | httpx | 真实且唯一。**任何新增的、面向被测目标的网络调用都必须经由它** |
 | 用例文件 | `cases.load_case_file` / `dump_case_file` | YAML 文件 | 真实。它是审批载体（ADR-0001），格式变更必须先读该 ADR |
 | 权威轨迹 | `trace.TraceStore` | SQLite | 真实 |
-| 工具注册表 | `tools.ToolRegistry` | 6 个只读/写内存工具 | 真实，与传输无关（ADR-0003），两种模式共用 |
+| 工具注册表 | `tools.ToolRegistry` | 生成集 / 诊断集 | 真实，与传输无关（ADR-0003）。注册表本身与用途无关，`specs=` 注入具体集合 |
+| 诊断 | `diagnosis.diagnose` | 只有模型驱动 | **假想中，故意不抽**。诊断没有确定性替代（归因是判断，不是计算），所以现在只有 1 个 adapter，不要为它发明抽象接口 |
 
 ### 必须保持深的模块
 
@@ -55,6 +57,8 @@
 - `policy.TargetPolicy`：两个方法，背后是允许范围语义、只读默认、userinfo 与协议校验。
 - `tools.ToolRegistry`：`tool_declarations()` + `call()` 两个入口，背后是参数 schema 校验、错误不抛异常、以及“工具失败也是事实”的约定。新增工具是对的，新增“能发请求”的工具不是。
 - `planner.plan`：一个函数、两个 adapter。它同时是 ADR-0003 的代码形态。
+- `agent_loop.AgentLoop`：机制（预算、工具分发、轨迹累积）与用途（提示词、开场白、产出含义）分离；生成与诊断共用同一个循环，各自只提供意图。调用方负责解释"产出算什么"。
+- `evaluation.evaluate_suite`：**不做任何 I/O**，只对 `run_once()` 交回来的 TestRun 做计算。这是它能同时服务两种规划模式、且能被纯函数式测试的原因。
 
 ### 适配器与词汇
 
@@ -103,6 +107,8 @@
 - **在适配器里放真实逻辑。** 有规则、有分支、需要被直接测到的东西，属于领域模块，不属于 `cli.py`。
 - **为了让校验通过而放宽校验。** 尤其是 `policy`、`sanitizer`、"无法判定 → 通过"这三处。
 - **把实现细节写进跨模块的格式里。** 典型反例见「已知的债」第 1 条。
+- **让机制知道意图。** `AgentLoop` 不知道"产出的用例算不算成果"，也不知道"哪些提交该记进轨迹"；这些由调用方填。把领域含义塞回机制，是最容易发生的退化。
+- **把归因当结论。** 归因是模型建议，`FailureAttribution` 永远不能写入或覆盖任何 Verdict，也不允许触发修改用例文件。
 - **静默忽略。** 解析不了的东西要记入 `ignored` / `needs_input` / `INCONCLUSIVE`，**绝不静默跳过**。（`specification.ignored`、`generator.needs_input`、`TestRun` 的 `truncated` 标记都是这条的产物）
 
 ---

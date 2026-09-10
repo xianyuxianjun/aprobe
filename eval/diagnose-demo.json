@@ -1,0 +1,28 @@
+[
+  {
+    "content": "先读这次运行的事实，再看接口契约。",
+    "tool_calls": [
+      { "id": "c1", "name": "get_run", "arguments": {} },
+      { "id": "c2", "name": "get_operation", "arguments": { "operation_id": "getPetStats" } }
+    ]
+  },
+  {
+    "content": "提交归因。",
+    "tool_calls": [
+      {
+        "id": "c3",
+        "name": "submit_diagnosis",
+        "arguments": {
+          "category": "interface_defect",
+          "reason": "契约声明 PetStats.total 为 integer，实现返回了字符串 \"2\"",
+          "evidence": [
+            "响应体中 total 的值为字符串 \"2\"",
+            "json_schema 断言在 total 处失败：'2' is not of type 'integer'"
+          ],
+          "suggested_fix": "确认是契约要放宽还是实现要修正"
+        }
+      }
+    ]
+  },
+  { "content": "归因完成：实现违反了契约。" }
+]

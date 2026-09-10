@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aprobe.agent_loop import PROMPT_VERSION, SYSTEM_PROMPT, AgentLoop
+from aprobe.planner import GENERATE_PROMPT_VERSION, GENERATE_SYSTEM_PROMPT, build_generation_loop
 from aprobe.model_client import ModelError, ModelReply, ModelToolCall, ScriptedModelClient
 from aprobe.models import AgentBudget, TerminationReason
 from aprobe.tools import PlanContext, ToolRegistry
@@ -35,7 +35,7 @@ def valid_submit(case_id: str = "list-pets-by-agent") -> tuple[str, dict]:
 def make_loop(specification, replies, budget: AgentBudget | None = None):
     registry = ToolRegistry(PlanContext(specification))
     client = ScriptedModelClient(replies)
-    return AgentLoop(registry, client, budget or AgentBudget()), registry, client
+    return build_generation_loop(registry, client, budget or AgentBudget()), registry, client
 
 
 def test_happy_path_produces_a_case_and_a_full_trace(specification) -> None:
@@ -55,8 +55,9 @@ def test_happy_path_produces_a_case_and_a_full_trace(specification) -> None:
     assert run.mode == "agent"
     assert run.consumed_steps == 3
     assert run.consumed_tokens == 3 * 120
-    assert run.produced_case_ids == ["list-pets-by-agent"]
-    assert run.prompt_version == PROMPT_VERSION
+    assert registry.context.submitted and registry.context.submitted[0].id == "list-pets-by-agent"
+    assert run.produced_case_ids == [], "产出的含义由调用方填，循环本身不解释它"
+    assert run.prompt_version == GENERATE_PROMPT_VERSION
     assert run.model == "scripted"
 
     first_step = run.steps[0]
@@ -72,7 +73,7 @@ def test_every_step_sees_the_system_prompt_and_the_tool_declarations(specificati
     loop.run()
     assert client.calls
     for call in client.calls:
-        assert call["system"] == SYSTEM_PROMPT
+        assert call["system"] == GENERATE_SYSTEM_PROMPT
         assert {item["function"]["name"] for item in call["tools"]} >= {"submit_case", "get_response_schema"}
 
 
@@ -111,7 +112,7 @@ def test_model_failure_is_recorded_as_planner_failed(specification) -> None:
             raise ModelError("模型端点调用失败: ConnectError")
 
     registry = ToolRegistry(PlanContext(specification))
-    run = AgentLoop(registry, BrokenClient()).run().agent_run
+    run = build_generation_loop(registry, BrokenClient()).run().agent_run
     assert run.termination_reason is TerminationReason.PLANNER_FAILED
     assert run.produced_case_ids == []
     assert any("模型调用失败" in note for note in run.notes)
@@ -133,7 +134,7 @@ def test_rejection_feedback_reaches_the_model(specification) -> None:
     tool_messages = [item for item in second_call_messages if item.get("role") == "tool"]
     assert tool_messages, "被拒绝的提交必须作为工具结果回传给模型"
     assert "不存在 operation_id" in tool_messages[0]["content"]
-    assert run.notes, "被拒绝的提交要进轨迹"
+    assert registry.context.rejected, "被拒绝的提交要留下记录，供调用方写进轨迹"
 
 
 def test_malformed_tool_arguments_do_not_crash_the_loop(specification) -> None:

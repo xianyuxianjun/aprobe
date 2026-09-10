@@ -88,10 +88,11 @@ class OpenAICompatibleClient:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         try:
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
             response = httpx.post(
                 f"{self.base_url}/chat/completions",
                 json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers=headers,
                 timeout=self.timeout_ms / 1000,
                 trust_env=False,  # 与 TestRunner 同理：不信任系统或环境代理
             )

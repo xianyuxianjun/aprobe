@@ -17,8 +17,9 @@ import uuid
 import json
 from typing import Any, TypedDict
 
+from langgraph.graph import END, StateGraph
+
 from .models import (
-    AGENT_PLANNER_VERSION,
     AgentBudget,
     AgentRun,
     AgentStep,
@@ -27,29 +28,6 @@ from .models import (
 )
 from .model_client import ModelClient, ModelError
 from .tools import ToolRegistry
-
-PROMPT_VERSION = "generate-0.0.1"
-
-SYSTEM_PROMPT = """你是接口契约测试的用例设计者。你的产出是一份可被人审阅的测试用例集合。
-
-你能做的事只有三件：查询 OpenAPI 规范、查看已有用例与历史结论、提交测试用例。
-你不能发起任何网络请求，也不能访问被测服务——你只能依据规范写用例。
-
-必须遵守：
-1. 只能引用规范中真实存在的 operation_id、路径与响应码，不得编造。
-2. 用例只声明"哪个 Operation 的哪个响应"（json_schema 断言用 response 字段），
-   不要写 JSON Pointer 或任何规范内部结构。
-3. 每条用例至少有一条断言。断言是确定性的：status / json_schema / json_path / header / response_time_ms。
-   其中 json_path 支持 equals、equals_path、length_equals_path、exists、type、contains、
-   length_equals、min_length、max_length。
-4. 需要路径参数或请求体才能调用的 Operation，如果你无法从规范确定合法取值，就不要为它造用例——
-   留空比编造一个假 id 更有价值。
-5. 优先写能表达业务规则的断言（例如 total 必须等于 items 的条数），而不只是状态码。
-6. 提交被拒绝时，按返回的具体问题修正后重试；同一错误不要重复提交。
-7. 覆盖完之后，直接给出停止理由，不要再调用工具。
-
-最后一条回复不要带工具调用，用一句话说明你覆盖了什么、哪些 Operation 你没有覆盖以及为什么。"""
-
 
 class _State(TypedDict, total=False):
     messages: list[dict[str, Any]]
@@ -69,15 +47,20 @@ class AgentLoop:
         self,
         registry: ToolRegistry,
         model: ModelClient,
+        *,
+        system_prompt: str,
+        initial_message: str,
         budget: AgentBudget | None = None,
-        prompt_version: str = PROMPT_VERSION,
-        planner_version: str = AGENT_PLANNER_VERSION,
+        prompt_version: str = "loop-0.0.1",
+        mode: str = "agent",
     ) -> None:
         self.registry = registry
         self.model = model
+        self.system_prompt = system_prompt
+        self.initial_message = initial_message
         self.budget = budget or AgentBudget()
         self.prompt_version = prompt_version
-        self.planner_version = planner_version
+        self.mode = mode
         self._steps: list[AgentStep] = []
         self._notes: list[str] = []
         self._started = 0.0
@@ -94,7 +77,7 @@ class AgentLoop:
         began = time.perf_counter()
         try:
             reply = self.model.complete(
-                system=SYSTEM_PROMPT,
+                system=self.system_prompt,
                 messages=state["messages"],
                 tools=self.registry.tool_declarations(),
             )
@@ -183,8 +166,6 @@ class AgentLoop:
         return None
 
     def run(self) -> LoopOutcome:
-        from langgraph.graph import END, StateGraph
-
         self._started = time.perf_counter()
         graph = StateGraph(_State)
         graph.add_node("decide", self._decide)
@@ -196,7 +177,7 @@ class AgentLoop:
 
         # 图的递归上限只是兜底；真正的预算是我们自己算的那三条
         app.invoke(
-            {"messages": [_initial_user_message(self.registry)], "step_index": 0},
+            {"messages": [{"role": "user", "content": self.initial_message}], "step_index": 0},
             config={"recursion_limit": 2 * self.budget.max_steps + 5},
         )
 
@@ -210,33 +191,18 @@ class AgentLoop:
         else:
             reason = TerminationReason.COMPLETED
 
-        context = self.registry.context
+        # 循环只知道“跑了什么”，不知道“产出算不算成果”——那是调用方的意图，不是机制
         agent_run = AgentRun(
             run_id=uuid.uuid4().hex[:12],
-            mode="agent",
+            mode=self.mode,
             model=self.model.name,
             prompt_version=self.prompt_version,
             budget=self.budget,
             termination_reason=reason,
             steps=self._steps,
-            produced_case_ids=[case.id for case in context.submitted],
-            notes=[*self._notes, *context.rejected[:10]],
+            notes=list(self._notes),
         )
         return LoopOutcome(agent_run)
-
-
-def _initial_user_message(registry: ToolRegistry) -> dict[str, Any]:
-    context = registry.context
-    covered = sorted(context.covered_operations())
-    return {
-        "role": "user",
-        "content": (
-            f"这是一份 OpenAPI 规范（{context.specification.title} {context.specification.version}），"
-            f"共 {len(context.specification.operations)} 个 Operation。"
-            f"用例文件中已有 {len(context.existing_cases)} 条用例，覆盖 {len(covered)} 个 Operation。\n"
-            "请先了解规范，再提交你为尚未覆盖的 Operation 设计的测试用例。"
-        ),
-    }
 
 
 def _last_assistant_tool_calls(messages: list[dict[str, Any]]) -> list[tuple[str, str, dict[str, Any]]]:

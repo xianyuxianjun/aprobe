@@ -102,3 +102,30 @@ class ModelService:
 
     def __exit__(self, *exc_info: object) -> None:
         self.stop()
+
+
+def main() -> None:
+    """本地演示用：按 JSON 脚本回放，方便在没有真实密钥时跑通 Agent 路径。"""
+    import argparse
+    import time
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="aprobe 的模型端点替身（仅本地演示与测试）")
+    parser.add_argument("--script", required=True, help="JSON 文件：按顺序回放的回复列表")
+    parser.add_argument("--port", type=int, default=8090)
+    args = parser.parse_args()
+
+    script = json.loads(Path(args.script).read_text(encoding="utf-8"))
+    service = ModelService(script, port=args.port)
+    print(f"模型端点替身监听 {service.base_url}（脚本 {args.script}）")
+    print("它不是被测目标，只替代 chat/completions 接口")
+    try:
+        service.start()
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        service.stop()
+
+
+if __name__ == "__main__":
+    main()
