@@ -8,11 +8,12 @@
 
 ## 核心主张
 
-设计上只做三件别人容易做错的事：
+设计上只做四件别人容易做错的事：
 
 1. **模型不接触网络。** 生成阶段的 Agent 只能读规范、写用例文件；网络出口只存在于确定性的执行阶段，且只接受用例文件里已存在的 `case_id`。见 [ADR-0001](./docs/adr/0001-case-file-as-approval-carrier.md)。
 2. **判定不由模型做出。** 通过/失败只来自声明式 Assertion 的确定性求值；无法求值只能是「无法判定」，不允许退化成「通过」。
 3. **事实来源是自有 Trace。** 编排层（LangGraph）的中间状态只用于流转，回放与评估读的是本项目持久化的权威轨迹。见 [ADR-0002](./docs/adr/0002-authoritative-trace-owned-by-aprobe.md)。
+4. **降级模式与 Agent 模式是同一条流程的两个 driver。** 不调用模型的模式不是"简化版"，而是同一个规划器 seam 的另一个实现：同一套工具、同一份产物结构、同一套判定。两种模式因此可比——质量差值本身就是一个可量化的结果。见 [ADR-0003](./docs/adr/0003-degraded-mode-shares-the-agent-seam.md)。
 
 ## 当前进展
 
@@ -33,7 +34,7 @@
 | CLI：`generate` / `validate` / `run` / `report` 与退出码语义 | 已实现 | `pytest tests/test_cli.py` |
 | 降级模式（不调用任何模型）跑通全流程 | 已实现 | 全部测试都在无密钥环境运行 |
 | 版本化 Mock 评估基准（conformant / violating 两个场景） | 已实现 | `pytest tests/test_runner.py` |
-| 生成循环（LangGraph 有界多步 + 注册工具 + 预算） | **开发中**（M1） | — |
+| 生成循环（LangGraph 有界多步 + 注册工具 + 预算） | **开发中**（M1，接在降级模式同一个 seam 之后，见 [ADR-0003](./docs/adr/0003-degraded-mode-shares-the-agent-seam.md)） | — |
 | 诊断循环（失败归因：接口缺陷 / 用例缺陷 / 环境问题 / 无法判定） | **开发中**（M3） | — |
 | Agent Step / Tool Call 轨迹与 token 成本 | **开发中**（M1） | — |
 | 评估集与量化指标（判定准确率、无依据结论率、回放一致率） | **开发中**（M2） | — |
@@ -117,7 +118,7 @@ src/aprobe/
 mock/mock_service.py 版本化评估基准
 cases/petstore.yaml  示例用例文件（含人工补写的路径参数用例）
 examples/petstore.yaml
-docs/adr/            架构决策记录
+docs/adr/            架构决策记录（0001 审批载体、0002 权威轨迹、0003 模式共用同一条流程）
 CONTEXT.md           术语表与领域边界
 ```
 
