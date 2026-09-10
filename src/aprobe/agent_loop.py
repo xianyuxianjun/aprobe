@@ -29,6 +29,15 @@ from .models import (
 from .model_client import ModelClient, ModelError
 from .tools import ToolRegistry
 
+#: 预算消耗到这个比例就提醒模型收尾，而不是让它一路撞到上限、一无所获
+BUDGET_NUDGE_RATIO = 0.75
+
+BUDGET_NUDGE = (
+    "预算即将耗尽。请立刻停止继续查询，把你现在已经能确定的最有价值的产出提交出来，"
+    "然后用一句话说明你完成了什么、哪些没做完。如果确实没有值得提交的内容，直接结束。"
+)
+
+
 class _State(TypedDict, total=False):
     messages: list[dict[str, Any]]
     step_index: int
@@ -64,6 +73,10 @@ class AgentLoop:
         self._steps: list[AgentStep] = []
         self._notes: list[str] = []
         self._started = 0.0
+        self._nudged = False
+        #: 只记录"模型调用失败"这一种情况。不要拿 notes 当失败标志——
+        #: 任何一条备注都会被误判成 planner_failed（催收尾的提醒就踩过这个坑）。
+        self._failed = ""
 
     # ---- 图的两个节点 ----
 
@@ -84,7 +97,8 @@ class AgentLoop:
         except ModelError as exc:
             step.duration_ms = int((time.perf_counter() - began) * 1000)
             self._steps.append(step)
-            self._notes.append(f"模型调用失败：{exc}")
+            self._failed = f"模型调用失败：{exc}"
+            self._notes.append(self._failed)
             return {"failed": str(exc), "step_index": step.index + 1, "messages": state["messages"]}
 
         step.duration_ms = int((time.perf_counter() - began) * 1000)
@@ -140,6 +154,11 @@ class AgentLoop:
                     "content": json.dumps(body, ensure_ascii=False, default=str)[:4000],
                 }
             )
+        if not self._nudged and self.near_budget():
+            # 只催一次；这是确定性代码的职责，不能指望提示词里写一句"注意预算"就管用
+            messages.append({"role": "user", "content": BUDGET_NUDGE})
+            self._nudged = True
+            self._notes.append("已提醒模型收尾（预算接近上限）")
         return {"messages": messages}
 
     # ---- 循环控制 ----
@@ -154,16 +173,28 @@ class AgentLoop:
             return "stop"
         return "decide"
 
+    def consumed_tokens(self) -> int:
+        return sum(step.input_tokens + step.output_tokens for step in self._steps)
+
+    def elapsed_ms(self) -> int:
+        return int((time.perf_counter() - self._started) * 1000)
+
     def budget_exhausted(self) -> str | None:
-        elapsed_ms = int((time.perf_counter() - self._started) * 1000)
-        consumed_tokens = sum(step.input_tokens + step.output_tokens for step in self._steps)
         if len(self._steps) >= self.budget.max_steps:
             return f"达到步数上限 {self.budget.max_steps}"
-        if consumed_tokens >= self.budget.max_tokens:
+        if self.consumed_tokens() >= self.budget.max_tokens:
             return f"达到 token 上限 {self.budget.max_tokens}"
-        if elapsed_ms >= self.budget.max_ms:
+        if self.elapsed_ms() >= self.budget.max_ms:
             return f"达到时长上限 {self.budget.max_ms}ms"
         return None
+
+    def near_budget(self) -> bool:
+        """是否已经该收尾了。与"耗尽"分开：耗尽只能终止，临近还能交出产出。"""
+        if len(self._steps) >= max(1, int(self.budget.max_steps * BUDGET_NUDGE_RATIO)):
+            return True
+        if self.consumed_tokens() >= self.budget.max_tokens * BUDGET_NUDGE_RATIO:
+            return True
+        return self.elapsed_ms() >= self.budget.max_ms * BUDGET_NUDGE_RATIO
 
     def run(self) -> LoopOutcome:
         self._started = time.perf_counter()
@@ -182,8 +213,7 @@ class AgentLoop:
         )
 
         exhausted = self.budget_exhausted()
-        failed = self._notes[-1] if self._notes else ""
-        if failed:
+        if self._failed:
             reason = TerminationReason.PLANNER_FAILED
         elif exhausted:
             reason = TerminationReason.BUDGET_EXHAUSTED

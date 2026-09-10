@@ -16,6 +16,17 @@ from aprobe.cli import main
 from aprobe.config import effective_environment, parse_env_file
 
 
+@pytest.fixture
+def allow_env_file(monkeypatch):
+    """整个测试会话默认忽略 .env（见 conftest 的 _hermetic_environment）；这里显式打开。"""
+    monkeypatch.delenv("APROBE_NO_ENV_FILE", raising=False)
+
+
+def test_the_disable_switch_wins(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("SHOULD_NOT_LOAD=1\n", encoding="utf-8")
+    assert effective_environment(tmp_path, {"APROBE_NO_ENV_FILE": "1"}) == {"APROBE_NO_ENV_FILE": "1"}
+
+
 def test_parse_handles_the_usual_shapes() -> None:
     text = """
 # 整行注释
@@ -104,7 +115,7 @@ def model_service():
 
 
 def test_cli_reads_the_env_file_from_the_working_directory(
-    tmp_path, spec_path, local_cases, model_service, monkeypatch, capsys
+    tmp_path, spec_path, local_cases, model_service, monkeypatch, capsys, allow_env_file
 ) -> None:
     """没有 export 任何东西，只靠 ./.env —— 这条路必须真的通。"""
     config = write_config(tmp_path, base_url="http://127.0.0.1:1", spec=spec_path, cases=local_cases)
@@ -123,7 +134,7 @@ def test_cli_reads_the_env_file_from_the_working_directory(
 
 
 def test_real_environment_still_beats_the_env_file(
-    tmp_path, spec_path, local_cases, model_service, monkeypatch, capsys
+    tmp_path, spec_path, local_cases, model_service, monkeypatch, capsys, allow_env_file
 ) -> None:
     """`.env` 里是正确的端点，真实环境里是坏的 —— 必须用坏的那个（真实环境优先）。"""
     config = write_config(tmp_path, base_url="http://127.0.0.1:1", spec=spec_path, cases=local_cases)
@@ -139,7 +150,7 @@ def test_real_environment_still_beats_the_env_file(
 
 
 def test_env_file_values_never_reach_the_trace(
-    tmp_path, spec_path, local_cases, model_service, monkeypatch, capsys
+    tmp_path, spec_path, local_cases, model_service, monkeypatch, capsys, allow_env_file
 ) -> None:
     """`.env` 里可能有真的密钥；它不能出现在任何落库产物里。"""
     config = write_config(tmp_path, base_url="http://127.0.0.1:1", spec=spec_path, cases=local_cases)

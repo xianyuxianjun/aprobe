@@ -52,13 +52,35 @@ def bundle_local_refs(schema: dict[str, Any], document: dict[str, Any]) -> dict[
             return [rewrite(item) for item in node]
         return node
 
+    reachable: set[str] = set()
+    _collect_component_refs(schema, schemas, reachable)
     bundled: dict[str, Any] = rewrite(schema)
-    defs = {escape_token(str(name)): rewrite(node) for name, node in schemas.items()}
+    defs = {escape_token(name): rewrite(schemas[name]) for name in sorted(reachable) if name in schemas}
     existing = bundled.get("$defs")
     if isinstance(existing, dict):
         defs = {**defs, **existing}
     bundled["$defs"] = defs
     return bundled
+
+
+def _collect_component_refs(node: Any, schemas: dict[str, Any], found: set[str]) -> None:
+    """收集从 `node` 出发可达的 component 名字（传递闭包）。
+
+    只打包用得到的部分：接真实模型时发现，把整份文档塞进 $defs 会让每次
+    get_response_schema 的返回体大出一个量级，而这些 token 会在后续每一步里重复发送。
+    """
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith(_COMPONENT_SCHEMA_PREFIX):
+            name = ref[len(_COMPONENT_SCHEMA_PREFIX) :]
+            if name not in found:
+                found.add(name)
+                _collect_component_refs(schemas.get(name, {}), schemas, found)
+        for value in node.values():
+            _collect_component_refs(value, schemas, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_component_refs(item, schemas, found)
 
 
 def resolve_pointer(document: Any, pointer: str) -> Any:

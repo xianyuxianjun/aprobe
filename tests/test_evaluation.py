@@ -11,6 +11,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from conftest import write_config
 
 from aprobe.cli import main
@@ -31,6 +32,7 @@ CONFORMANT_SUITE = REPO / "eval" / "petstore-conformant.yaml"
 VIOLATING_SUITE = REPO / "eval" / "petstore-violating.yaml"
 EDGE_CONFORMANT_SUITE = REPO / "eval" / "edgecases-conformant.yaml"
 EDGE_VIOLATING_SUITE = REPO / "eval" / "edgecases-violating.yaml"
+EDGE_DEFECTS_SUITE = REPO / "eval" / "edgecases-defects.yaml"
 
 
 def run(case_id: str, verdict: Verdict, *, evidence: int = 1, duration_ms: int = 10) -> TestRun:
@@ -129,7 +131,7 @@ def test_unnannotated_cases_are_excluded_and_reported() -> None:
         run_once=lambda: [run("a", Verdict.PASSED), run("unlabelled", Verdict.PASSED)],
     )
     assert report.metrics.total == 1
-    assert any("没有标注预期结论" in note for note in report.notes)
+    assert any("没有对应的标注" in note for note in report.notes)
 
 
 def test_markdown_report_declares_its_limits() -> None:
@@ -144,14 +146,11 @@ def test_bundled_suites_load_and_agree_on_their_labels() -> None:
     violating = load_suite(VIOLATING_SUITE)
     assert conformant.scenario == "conformant"
     assert violating.scenario == "violating"
-    assert {item.case_id for item in conformant.expectations} == {item.case_id for item in violating.expectations}
+    left = {item.case_id: item.verdict for item in conformant.expectations}
+    right = {item.case_id: item.verdict for item in violating.expectations}
+    assert set(left) == set(right)
     # 两个样例集只有一条判定不同——这正是"注入的违约"
-    diff = [
-        item.case_id
-        for item in conformant.expectations
-        if item.verdict is not violating.expected_for(item.case_id)
-    ]
-    assert diff == ["get-pet-stats"]
+    assert sorted(key for key in left if left[key] is not right[key]) == ["get-pet-stats"]
 
 
 def test_evaluate_scores_the_conformant_baseline(tmp_path, spec_path, cases_path, conformant, capsys) -> None:
@@ -251,16 +250,65 @@ def test_evaluate_exports_machine_readable_result(tmp_path, spec_path, cases_pat
     assert "comparison" not in payload  # 没有 --against-cases 就不产生对比
 
 
-def test_all_four_bundled_suites_load() -> None:
+def test_all_bundled_suites_load() -> None:
     suites = {
         path.name: load_suite(path)
-        for path in (CONFORMANT_SUITE, VIOLATING_SUITE, EDGE_CONFORMANT_SUITE, EDGE_VIOLATING_SUITE)
+        for path in (
+            CONFORMANT_SUITE,
+            VIOLATING_SUITE,
+            EDGE_CONFORMANT_SUITE,
+            EDGE_VIOLATING_SUITE,
+            EDGE_DEFECTS_SUITE,
+        )
     }
     assert suites["petstore-conformant.yaml"].scenario == "conformant"
     assert suites["petstore-violating.yaml"].scenario == "violating"
     assert suites["edgecases-conformant.yaml"].scenario == "conformant"
     assert suites["edgecases-violating.yaml"].scenario == "violating"
     assert len(suites["edgecases-violating.yaml"].expectations) == 12
+
+
+def test_expectations_can_be_anchored_to_an_operation_instead_of_a_case() -> None:
+    """跨用例集的比较必须靠接口锚定：不同设计者起的用例 id 不一样。"""
+    by_operation = EvalSuite(
+        name="by-operation",
+        scenario="violating",
+        spec="examples/edgecases.yaml",
+        cases="cases/edgecases.yaml",
+        expectations=[Expectation(operation_id="getPagination", verdict=Verdict.FAILED)],
+    )
+    runs = {
+        "模型自己起的名字": run("模型自己起的名字", Verdict.FAILED).model_copy(
+            update={"operation_id": "getPagination"}
+        )
+    }
+    report = evaluate_suite(by_operation, run_once=lambda: list(runs.values()))
+    assert report.metrics.total == 1
+    assert report.metrics.detected_defects == 1
+    assert report.metrics.defect_detection_rate == 1.0
+    assert report.outcomes[0].case_id == "getPagination（按接口）"
+
+    with pytest.raises(Exception):
+        Expectation(verdict=Verdict.PASSED)  # 必须指定锚点
+    with pytest.raises(Exception):
+        Expectation(case_id="a", operation_id="b", verdict=Verdict.PASSED)  # 不能同时指定
+
+
+def test_operation_anchor_counts_a_defect_found_by_any_of_its_cases() -> None:
+    """一个接口上有多条用例时，只要有一条判为失败，这个缺陷就算被发现。"""
+    suite_by_operation = EvalSuite(
+        name="x",
+        scenario="s",
+        spec="s",
+        cases="c",
+        expectations=[Expectation(operation_id="getPagination", verdict=Verdict.FAILED)],
+    )
+    weak = run("weak", Verdict.PASSED).model_copy(update={"operation_id": "getPagination"})
+    strong = run("strong", Verdict.FAILED).model_copy(update={"operation_id": "getPagination"})
+    assert evaluate_suite(suite_by_operation, run_once=lambda: [weak]).metrics.detected_defects == 0
+    both = evaluate_suite(suite_by_operation, run_once=lambda: [weak, strong])
+    assert both.metrics.detected_defects == 1
+    assert both.metrics.defect_detection_rate == 1.0
 
 
 def test_edge_suites_differ_in_more_than_one_place() -> None:
@@ -407,7 +455,11 @@ def test_comparison_reports_the_detection_delta() -> None:
 def test_cli_compares_two_case_sets_on_the_same_baseline(
     tmp_path, edge_spec_path, edge_cases_path, edge_violating, capsys
 ) -> None:
-    """仓库里那两套用例的真实差值：仅确定性生成 vs Agent 补齐之后。"""
+    """仓库里那两套用例的真实差值：仅确定性生成 vs Agent 补齐之后。
+
+    断言的是真实模型的产出（见 README 的实测数字）——它现在固定在仓库里，
+    所以这条对比在 CI 里是可复现的。
+    """
     degraded = REPO / "cases" / "edgecases-degraded.yaml"
     agent = REPO / "cases" / "edgecases-agent.yaml"
     config = write_config(tmp_path, base_url=edge_violating.base_url, spec=edge_spec_path, cases=degraded)
@@ -417,7 +469,7 @@ def test_cli_compares_two_case_sets_on_the_same_baseline(
             "--config",
             str(config),
             "--suite",
-            str(EDGE_VIOLATING_SUITE),
+            str(EDGE_DEFECTS_SUITE),
             "--spec",
             str(edge_spec_path),
             "--cases",
@@ -428,6 +480,6 @@ def test_cli_compares_two_case_sets_on_the_same_baseline(
     )
     output = capsys.readouterr().out
     assert code == 0, output
-    assert "发现违约 / 注入违约 | 6/9 | 9/9" in output
-    assert "**66.7%** | **100.0%** | **+33.3%**" in output
-    assert "未被覆盖的标注 | 3 | 0" in output
+    assert "发现违约 / 注入违约 | 6/8 | 8/8" in output
+    assert "**75.0%** | **100.0%** | **+25.0%**" in output
+    assert "假阴性（漏报） | 2 | 0" in output

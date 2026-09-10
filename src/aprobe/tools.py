@@ -18,7 +18,134 @@ from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
 from .cases import operations_by_id, validate_cases
-from .models import Specification, TestCase, TestRun
+from .models import Assertion, AssertionKind, Specification, TestCase, TestRun
+
+#: 断言深度：schema 只证明结构与状态码；value 证明具体取值；rule 证明跨字段的业务规则。
+#: 这个信号直接决定模型该不该继续加深——没有它，模型只能看到"这个 Operation 被覆盖了"。
+_DEPTH_RANK = {"schema": 0, "value": 1, "rule": 2}
+_CROSS_FIELD_OPERATORS = ("equals_path", "length_equals_path")
+
+
+def describe_assertion(assertion: Assertion) -> str:
+    """一句话说明这条断言在验什么，供模型判断已有覆盖的深度。
+
+    用 `kind is AssertionKind.X` 做比较，不要 `str(kind)`：`class X(str, Enum)` 的
+    `__str__` 走的是 Enum 的，会得到 "AssertionKind.STATUS" 而不是 "status"。
+    """
+    if assertion.kind is AssertionKind.STATUS:
+        return f"status in {assertion.in_}"
+    if assertion.kind is AssertionKind.JSON_SCHEMA:
+        return f"符合契约中 {assertion.response or '内联'} 的响应结构"
+    if assertion.kind is AssertionKind.JSON_PATH:
+        operators = {
+            key: value
+            for key, value in assertion.model_dump(exclude_none=True, by_alias=True).items()
+            if key not in ("kind", "path")
+        }
+        return f"{assertion.path} " + " ".join(f"{key}={value}" for key, value in operators.items())
+    if assertion.kind is AssertionKind.HEADER:
+        operators = {
+            key: value
+            for key, value in assertion.model_dump(exclude_none=True, by_alias=True).items()
+            if key not in ("kind", "name")
+        }
+        return f"header {assertion.name} " + " ".join(f"{key}={value}" for key, value in operators.items())
+    return f"response_time_ms<={assertion.max}"
+
+
+def assertion_depth(assertions: list[Assertion]) -> str:
+    depth = "schema"
+    for assertion in assertions:
+        if assertion.equals_path is not None or assertion.length_equals_path is not None:
+            return "rule"
+        if assertion.kind not in (AssertionKind.STATUS, AssertionKind.JSON_SCHEMA):
+            depth = "value"
+    return depth
+
+
+def _depth_of(cases: list[TestCase]) -> str:
+    best = "schema"
+    for case in cases:
+        candidate = assertion_depth(case.assertions)
+        if _DEPTH_RANK[candidate] > _DEPTH_RANK[best]:
+            best = candidate
+    return best
+
+
+_ASSERTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "一条断言。不同 kind 的字段不同："
+        "status 用 in:[整数...]；json_schema 用 response:\"200\"（与 schema 二选一）；"
+        "json_path 用 path 加一个算子，跨字段规则用 equals_path / length_equals_path；"
+        "header 用 name 加一个算子；response_time_ms 用 max。"
+    ),
+    "oneOf": [
+        {
+            "properties": {"kind": {"const": "status"}, "in": {"type": "array", "items": {"type": "integer"}, "minItems": 1}},
+            "required": ["kind", "in"],
+            "additionalProperties": False,
+        },
+        {
+            "properties": {
+                "kind": {"const": "json_schema"},
+                "response": {"type": ["string", "integer"]},
+                "schema": {"type": "object"},
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
+            "anyOf": [{"required": ["response"]}, {"required": ["schema"]}],
+        },
+        {
+            "properties": {
+                "kind": {"const": "json_path"},
+                "path": {"type": "string", "description": "受限 JSONPath，例如 $.items 或 $.items[0].id"},
+                "equals": {},
+                "equals_path": {"type": "string", "description": "另一个 JSONPath，两者取值必须相等"},
+                "length_equals_path": {"type": "string", "description": "另一个 JSONPath，其整数取值必须等于本值的长度"},
+                "exists": {"type": "boolean"},
+                "type": {"type": "string", "enum": ["string", "integer", "number", "boolean", "array", "object", "null"]},
+                "contains": {},
+                "length_equals": {"type": "integer"},
+                "min_length": {"type": "integer"},
+                "max_length": {"type": "integer"},
+            },
+            "required": ["kind", "path"],
+            "additionalProperties": False,
+            "anyOf": [
+                {"required": ["equals"]},
+                {"required": ["equals_path"]},
+                {"required": ["length_equals_path"]},
+                {"required": ["exists"]},
+                {"required": ["type"]},
+                {"required": ["contains"]},
+                {"required": ["length_equals"]},
+                {"required": ["min_length"]},
+                {"required": ["max_length"]},
+            ],
+        },
+        {
+            "properties": {
+                "kind": {"const": "header"},
+                "name": {"type": "string"},
+                "equals": {},
+                "contains": {},
+                "exists": {"type": "boolean"},
+            },
+            "required": ["kind", "name"],
+            "additionalProperties": False,
+            "anyOf": [{"required": ["equals"]}, {"required": ["contains"]}, {"required": ["exists"]}],
+        },
+        {
+            "properties": {"kind": {"const": "response_time_ms"}, "max": {"type": "integer"}},
+            "required": ["kind", "max"],
+            "additionalProperties": False,
+        },
+    ],
+}
+
+#: 历史查询默认只回最近这么多条：无上限的返回会在后续每一步重复发送
+DEFAULT_HISTORY_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -90,9 +217,15 @@ class PlanContext:
                     "tags": operation.tags,
                     "has_required_input": self._needs_input(operation),
                     "declared_responses": [response.status for response in operation.responses],
-                    "already_covered": any(
-                        case.operation_id == operation.operation_id
-                        for case in [*self.existing_cases, *self.submitted]
+                    "existing_case_ids": [
+                        case.id for case in self.existing_cases if case.operation_id == operation.operation_id
+                    ],
+                    "assertion_depth": _depth_of(
+                        [
+                            case
+                            for case in [*self.existing_cases, *self.submitted]
+                            if case.operation_id == operation.operation_id
+                        ]
                     ),
                 }
             )
@@ -115,14 +248,35 @@ class PlanContext:
                     "path": case.request.path,
                     "summary": case.summary,
                     "origin": case.origin,
+                    "assertion_depth": assertion_depth(case.assertions),
+                    "asserts": [describe_assertion(item) for item in case.assertions],
                 }
                 for case in self.existing_cases
             ],
             "total": len(self.existing_cases),
+            "note": (
+                "assertion_depth=schema 表示只验了状态码与结构；value 表示验了具体取值；"
+                "rule 表示验了跨字段的业务规则。schema 层的用例挡不住实现违约。"
+            ),
         }
 
-    def get_case_history(self, operation_id: str) -> dict[str, Any]:
-        return {"operation_id": operation_id, "runs": self.history.get(operation_id, [])}
+    def get_case_history(self, operation_id: str, limit: int = DEFAULT_HISTORY_LIMIT) -> dict[str, Any]:
+        """只给最近的若干条 + 汇总。
+
+        无上限地返回全部历史（实测里有 38 条）会在后续每一步重复发送，先把预算烧光。
+        """
+        runs = self.history.get(operation_id, [])
+        recent = runs[-max(1, limit) :]
+        by_verdict: dict[str, int] = {}
+        for item in runs:
+            by_verdict[item["verdict"]] = by_verdict.get(item["verdict"], 0) + 1
+        return {
+            "operation_id": operation_id,
+            "recent_runs": recent,
+            "total_runs": len(runs),
+            "by_verdict": by_verdict,
+            "note": f"只返回最近 {len(recent)} 条；total_runs/by_verdict 是全部历史",
+        }
 
     def covered_operations(self) -> set[str]:
         return {case.operation_id for case in [*self.existing_cases, *self.submitted]}
@@ -138,8 +292,11 @@ class PlanContext:
         try:
             case = TestCase.model_validate(payload)
         except ValidationError as exc:
-            problems = [f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors()]
-            self.rejected.append(f"{payload.get('id', '(no id)')}: 结构非法")
+            problems = [
+                f"{'.'.join(str(part) for part in error['loc']) or '(root)'}: {error['msg']}"
+                for error in exc.errors()
+            ]
+            self.rejected.append(f"{payload.get('id', '(no id)')}: " + "; ".join(problems))
             return {"accepted": False, "problems": problems}
         if case.id in self._submitted_ids:
             return {"accepted": False, "problems": [f"用例 id 已存在: {case.id}"]}
@@ -188,13 +345,13 @@ class ToolRegistry:
             Draft202012Validator(spec.parameters).iter_errors(arguments), key=lambda item: list(item.path)
         )
         if errors:
-            first = errors[0]
-            location = "/".join(str(part) for part in first.path) or "(root)"
+            messages = [_leaf_message(error) for error in errors[:3]]
+            detail = " | ".join(dict.fromkeys(messages))
             return ToolResult(
                 ok=False,
-                payload={},
-                summary=f"{name} 参数非法：{location}",
-                error=first.message,
+                payload={"problems": messages},
+                summary=f"{name} 参数非法：{detail[:300]}",
+                error=detail,
             )
         try:
             payload = spec.handler(arguments)
@@ -213,6 +370,15 @@ class ToolRegistry:
                 error=str(payload.get("error") or "被拒绝"),
             )
         return ToolResult(ok=True, payload=payload, summary=summary)
+
+
+def _leaf_message(error: Any) -> str:
+    """oneOf/anyOf 的外层错误本身没有信息量，要往下取到具体的那条。"""
+    location = "/".join(str(part) for part in getattr(error, "path", ())) or "(root)"
+    if getattr(error, "context", None):
+        inner = "; ".join(_leaf_message(item) for item in error.context[:4])
+        return f"{location}: {inner}"
+    return f"{location}: {error.message}"
 
 
 def _generic_summary(payload: dict[str, Any]) -> str:
@@ -256,12 +422,19 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
             description="取某个 Operation 过去的运行结论，用于聚焦从未覆盖或曾经失败的接口。",
             parameters={
                 "type": "object",
-                "properties": {"operation_id": {"type": "string"}},
+                "properties": {
+                    "operation_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                },
                 "required": ["operation_id"],
                 "additionalProperties": False,
             },
-            handler=lambda args: context.get_case_history(args["operation_id"]),
-            summarize=lambda payload: f"{len(payload.get('runs', []))} 条历史运行",
+            handler=lambda args: context.get_case_history(
+                args["operation_id"], args.get("limit", DEFAULT_HISTORY_LIMIT)
+            ),
+            summarize=lambda payload: (
+                f"历史共 {payload.get('total_runs', 0)} 条，返回最近 {len(payload.get('recent_runs', []))} 条"
+            ),
         ),
         ToolSpec(
             name="submit_case",
@@ -288,15 +461,7 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
                         "required": ["method", "path"],
                         "additionalProperties": False,
                     },
-                    "assertions": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {"kind": {"type": "string"}},
-                            "required": ["kind"],
-                        },
-                    },
+                    "assertions": {"type": "array", "minItems": 1, "items": _ASSERTION_SCHEMA},
                     "requires": {"type": "array", "items": {"type": "string"}},
                     "write": {"type": "boolean"},
                 },
@@ -305,7 +470,9 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
             },
             handler=lambda args: context.submit_case({**args, "origin": "agent"}),
             summarize=lambda payload: (
-                f"已接受 {payload.get('case_id')}" if payload.get("accepted") else "被拒绝"
+                f"已接受 {payload.get('case_id')}"
+                if payload.get("accepted")
+                else "被拒绝：" + "; ".join(str(item) for item in payload.get("problems", []))[:300]
             ),
         ),
     ]

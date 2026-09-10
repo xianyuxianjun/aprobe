@@ -49,6 +49,7 @@ suites=(
   "eval/petstore-violating.yaml:18081"
   "eval/edgecases-conformant.yaml:18082"
   "eval/edgecases-violating.yaml:18083"
+  "eval/edgecases-defects.yaml:18083"
 )
 for entry in "${suites[@]}"; do
   suite="${entry%%:*}"; port="${entry##*:}"
@@ -65,15 +66,16 @@ for entry in "${suites[@]}"; do
 done
 
 # 规划器对比：仅确定性生成 vs Agent 补齐之后。
+# 用「按接口锚定」的缺陷集：不同设计者起的用例 id 不一样，只有锚在缺陷上才可比。
 # 这条断言把项目最核心的主张（业务规则类违约需要会读语义的用例设计者）变成回归测试。
-echo "=== 规划器对比：edgecases-violating ==="
+echo "=== 规划器对比：edgecases-defects ==="
 if ! "$APROBE" evaluate \
     --config aprobe.yaml \
-    --suite eval/edgecases-violating.yaml \
+    --suite eval/edgecases-defects.yaml \
     --target http://127.0.0.1:18083 \
     --cases cases/edgecases-degraded.yaml \
     --against-cases cases/edgecases-agent.yaml \
-    --json "$REPORTS/compare-edgecases-violating.json"; then
+    --json "$REPORTS/compare-edgecases-defects.json"; then
   failed=1
 fi
 

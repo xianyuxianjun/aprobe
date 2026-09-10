@@ -157,3 +157,32 @@ def test_loop_never_receives_the_target_address(specification) -> None:
     transcript = str(client.calls)
     for leak in ("http://", "127.0.0.1", "Authorization"):
         assert leak not in transcript
+
+
+def test_budget_reminder_is_sent_once_and_only_once(specification) -> None:
+    """预算将尽时必须让模型有机会交出部分产出，而不是一路撞到上限、一无所获。"""
+    looping = [reply(("list_operations", {}), input_tokens=1000, output_tokens=100) for _ in range(8)]
+    loop, _, client = make_loop(
+        specification, looping, AgentBudget(max_steps=4, max_tokens=100000)
+    )
+    run = loop.run().agent_run
+
+    reminders = [
+        message
+        for call in client.calls
+        for message in call["messages"]
+        if message.get("role") == "user" and "预算即将耗尽" in str(message.get("content"))
+    ]
+    assert len(reminders) == 1
+    assert any("已提醒模型收尾" in note for note in run.notes)
+    assert run.termination_reason is TerminationReason.BUDGET_EXHAUSTED
+
+
+def test_a_reminder_note_is_not_mistaken_for_a_planner_failure(specification) -> None:
+    """回归：曾经用 notes 的最后一条判断"模型失败"，于是一条催收尾备注就被误判成 planner_failed。"""
+    looping = [reply(("list_operations", {}), input_tokens=1000, output_tokens=100) for _ in range(8)]
+    loop, _, _ = make_loop(specification, looping, AgentBudget(max_steps=3, max_tokens=100000))
+    run = loop.run().agent_run
+    assert run.notes, "这条路径上必然有备注"
+    assert run.termination_reason is TerminationReason.BUDGET_EXHAUSTED
+    assert run.termination_reason is not TerminationReason.PLANNER_FAILED

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .errors import ConfigError, ExitCode
 from .models import TestRun, Verdict
@@ -24,11 +24,43 @@ SUITE_VERSION = 1
 
 
 class Expectation(BaseModel):
+    """一条标注。
+
+    `case_id` 与 `operation_id` 二选一，这个选择决定了度量的性质：
+
+    - 按 **case_id** 标注：回归用。它锚定具体用例，所以换一套用例就失效。
+    - 按 **operation_id** 标注：它锚定"这个接口上注入的缺陷"，因此**跨用例集可比**——
+      不同设计者起的用例 id 不一样，但他们对付的是同一个缺陷。
+
+    接真实模型时踩到过这件事：模型产出的用例 id 与人工用例不同，按 case_id 标注
+    会让那 7 条新用例全部被忽略，对比表显示 +0.0%。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    case_id: str
+    case_id: str | None = None
+    operation_id: str | None = None
     verdict: Verdict
     note: str = ""
+
+    @model_validator(mode="after")
+    def _check_subject(self) -> "Expectation":
+        if (self.case_id is None) == (self.operation_id is None):
+            raise ValueError("标注必须且只能指定 case_id 或 operation_id 之一")
+        return self
+
+    @property
+    def subject(self) -> str:
+        return self.case_id or f"{self.operation_id}（按接口）"
+
+
+def _strongest_verdict(runs: list[TestRun]) -> Verdict:
+    """一个接口上可能有多条用例：只要有一条判为失败，这个缺陷就算被发现。"""
+    if any(run.verdict is Verdict.FAILED for run in runs):
+        return Verdict.FAILED
+    if any(run.verdict is Verdict.PASSED for run in runs):
+        return Verdict.PASSED
+    return Verdict.INCONCLUSIVE
 
 
 class EvalSuite(BaseModel):
@@ -43,11 +75,11 @@ class EvalSuite(BaseModel):
     cases: str
     expectations: list[Expectation] = Field(default_factory=list)
 
-    def expected_for(self, case_id: str) -> Verdict | None:
-        for expectation in self.expectations:
-            if expectation.case_id == case_id:
-                return expectation.verdict
-        return None
+    def runs_for(self, expectation: "Expectation", runs: dict[str, TestRun]) -> list[TestRun]:
+        if expectation.case_id is not None:
+            run = runs.get(expectation.case_id)
+            return [run] if run is not None else []
+        return [run for run in runs.values() if run.operation_id == expectation.operation_id]
 
 
 class CaseOutcome(BaseModel):
@@ -142,37 +174,38 @@ def evaluate_suite(
     first = rounds[0]
     outcomes: list[CaseOutcome] = []
     unsupported = 0
-    for case_id in sorted(first):
-        run = first[case_id]
-        expected = suite.expected_for(case_id)
-        if expected is None:
+    covered = 0
+    detected_defects = 0
+    total_defects = 0
+    for expectation in suite.expectations:
+        if expectation.verdict is Verdict.FAILED:
+            total_defects += 1
+        subject_runs = suite.runs_for(expectation, first)
+        if not subject_runs:
             continue
-        evidence = len(run.assertion_results)
-        if run.verdict in (Verdict.PASSED, Verdict.FAILED) and evidence == 0:
-            # 没有断言就给出通过/失败，就是"无依据结论"。结构上不该发生，所以要盯住它。
-            unsupported += 1
+        covered += 1
+        actual = _strongest_verdict(subject_runs)
+        # 没有断言就给出通过/失败，就是"无依据结论"。结构上不该发生，所以要盯住它。
+        unsupported += sum(
+            1
+            for run in subject_runs
+            if run.verdict in (Verdict.PASSED, Verdict.FAILED) and not run.assertion_results
+        )
+        if expectation.verdict is Verdict.FAILED and actual is Verdict.FAILED:
+            detected_defects += 1
         outcomes.append(
             CaseOutcome(
-                case_id=case_id,
-                expected=expected,
-                actual=run.verdict,
-                matched=expected is run.verdict,
-                termination_reason=run.termination_reason.value,
-                evidence=evidence,
-                duration_ms=run.duration_ms,
+                case_id=expectation.subject,
+                expected=expectation.verdict,
+                actual=actual,
+                matched=expectation.verdict is actual,
+                termination_reason=subject_runs[0].termination_reason.value,
+                evidence=sum(len(run.assertion_results) for run in subject_runs),
+                duration_ms=max(run.duration_ms for run in subject_runs),
             )
         )
 
     total = len(outcomes)
-    covered_ids = set(first)
-    detected_defects = 0
-    for expectation in suite.expectations:
-        if expectation.verdict is not Verdict.FAILED:
-            continue
-        run = first.get(expectation.case_id)
-        if run is not None and run.verdict is Verdict.FAILED:
-            detected_defects += 1
-    total_defects = sum(1 for item in suite.expectations if item.verdict is Verdict.FAILED)
     matched = sum(1 for outcome in outcomes if outcome.matched)
     false_positives = sum(1 for outcome in outcomes if outcome.expected is Verdict.PASSED and outcome.actual is Verdict.FAILED)
     false_negatives = sum(1 for outcome in outcomes if outcome.expected is Verdict.FAILED and outcome.actual is Verdict.PASSED)
@@ -184,7 +217,7 @@ def evaluate_suite(
         matched=matched,
         accuracy=(matched / total) if total else 0.0,
         labelled=len(suite.expectations),
-        uncovered=len(suite.expectations) - len(covered_ids & {item.case_id for item in suite.expectations}),
+        uncovered=len(suite.expectations) - covered,
         total_defects=total_defects,
         detected_defects=detected_defects,
         defect_detection_rate=(detected_defects / total_defects) if total_defects else 1.0,
@@ -198,14 +231,16 @@ def evaluate_suite(
         mean_duration_ms=int(sum(durations) / total) if total else 0,
     )
     notes: list[str] = []
-    missing = sorted(set(first) - {item.case_id for item in suite.expectations})
-    if missing:
-        notes.append(f"以下用例没有标注预期结论，未计入指标：{', '.join(missing)}")
-    unrun = sorted({item.case_id for item in suite.expectations} - set(first))
+    unlabelled = sorted(set(first) - {item.case_id for item in suite.expectations if item.case_id})
+    if not suite.expectations:
+        unlabelled = sorted(first)
+    unrun = [item.subject for item in suite.expectations if not suite.runs_for(item, first)]
     if unrun:
         notes.append(
             f"以下标注没有被任何用例覆盖，因此不可能被发现（{len(unrun)} 条）：{', '.join(unrun)}"
         )
+    if unlabelled and suite.expectations:
+        notes.append(f"以下用例没有对应的标注，未计入指标：{', '.join(unlabelled)}")
 
     return EvaluationReport(
         suite=suite.name,

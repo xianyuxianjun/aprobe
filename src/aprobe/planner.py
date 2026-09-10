@@ -43,8 +43,9 @@ GENERATE_SYSTEM_PROMPT = """你是接口契约测试的用例设计者。你的�
    其中 json_path 支持 equals、equals_path、length_equals_path、exists、type、contains、
    length_equals、min_length、max_length。
 4. 需要路径参数或请求体才能调用的 Operation，如果你无法从规范确定合法取值，就不要为它造用例——
-   留空比编造一个假 id 更有价值。
-5. 优先写能表达业务规则的断言（例如 total 必须等于 items 的条数），而不只是状态码。
+   留空比编造一个假 id 更有价值。但这只是取值的限制，不是"跳过这个 Operation"的理由。
+5. rule 层的断言是跨字段/跨结构的，用 json_path 的 equals_path 或 length_equals_path 表达，
+   例如：items 的条数必须等于 total；某个字段必须等于另一个字段；空列表时 total 必须为 0。
 6. 提交被拒绝时，按返回的具体问题修正后重试；同一错误不要重复提交。
 7. 覆盖完之后，直接给出停止理由，不要再调用工具。
 
@@ -72,7 +73,8 @@ def _initial_message(context: PlanContext) -> str:
         f"这是一份 OpenAPI 规范（{context.specification.title} {context.specification.version}），"
         f"共 {len(context.specification.operations)} 个 Operation。"
         f"用例文件中已有 {len(context.existing_cases)} 条用例，覆盖 {len(covered)} 个 Operation。\n"
-        "请先了解规范，再提交你为尚未覆盖的 Operation 设计的测试用例。"
+        "请先查清每条已有用例到底断言了什么、深度到哪一层，再判断哪些 Operation 还只停在结构校验上，"
+        "并为它们补上能表达业务规则的断言。已经覆盖的 Operation 同样需要你。"
     )
 
 

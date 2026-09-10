@@ -10,7 +10,7 @@ import enum
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 APROBE_VERSION = "0.0.1"
 DETERMINISTIC_PLANNER_VERSION = "deterministic-0.0.1"
@@ -97,6 +97,23 @@ class Assertion(BaseModel):
 
     # response_time_ms
     max: int | None = None
+
+    @field_validator("response", mode="before")
+    @classmethod
+    def _normalise_response(cls, value: Any) -> Any:
+        """`response: 200` 与 `response: "200"` 都接受。
+
+        响应码写成整数是自然写法；因为类型不符就拒绝，属于把错误强行制造出来。
+        """
+        return None if value is None else str(value)
+
+    @field_validator("in_", mode="before")
+    @classmethod
+    def _normalise_status_list(cls, value: Any) -> Any:
+        """`in: 200` 与 `in: [200]` 都接受。"""
+        if isinstance(value, int) and not isinstance(value, bool):
+            return [value]
+        return value
 
     @model_validator(mode="after")
     def _check_shape(self) -> "Assertion":
@@ -375,11 +392,15 @@ class AgentStep(BaseModel):
 
 
 class AgentBudget(BaseModel):
-    """一次 Agent 循环允许消耗的上限。耗尽不是通过，也不是失败。"""
+    """一次 Agent 循环允许消耗的上限。耗尽不是通过，也不是失败。
 
-    max_steps: int = 8
-    max_tokens: int = 24000
-    max_ms: int = 120_000
+    默认值来自实测：一次 9 个 Operation 的生成，模型会先查完契约再动手，
+    24000 token 会在它提交任何用例之前耗尽。
+    """
+
+    max_steps: int = 10
+    max_tokens: int = 60000
+    max_ms: int = 180_000
 
 
 class AgentRun(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,34 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(scope="session")
 def repository_root() -> Path:
     return ROOT
+
+
+#: 测试期间必须清掉的变量：开发者本机可能真的导出了它们
+_AMBIENT_VARIABLES = (
+    "APROBE_MODEL_BASE_URL",
+    "APROBE_MODEL",
+    "APROBE_MODEL_API_KEY",
+    "APROBE_MODEL_TIMEOUT_MS",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _hermetic_environment():
+    """让测试不受开发者本机状态影响。
+
+    没有这条守卫时，仓库根目录下一份真实的 `.env` 或一个已导出的密钥就会改变
+    测试结果——实测中它确实让一条断言"没有模型端点"的用例失败了。
+    """
+    saved = {name: os.environ.pop(name, None) for name in _AMBIENT_VARIABLES}
+    previous = os.environ.get("APROBE_NO_ENV_FILE")
+    os.environ["APROBE_NO_ENV_FILE"] = "1"
+    yield
+    os.environ.pop("APROBE_NO_ENV_FILE", None)
+    if previous is not None:
+        os.environ["APROBE_NO_ENV_FILE"] = previous
+    for name, value in saved.items():
+        if value is not None:
+            os.environ[name] = value
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -69,6 +98,11 @@ def edge_spec_path() -> Path:
 @pytest.fixture(scope="session")
 def edge_cases_path() -> Path:
     return ROOT / "cases" / "edgecases.yaml"
+
+
+@pytest.fixture
+def edge_specification(edge_spec_path: Path):
+    return load_specification(edge_spec_path)
 
 
 def _edge_service(scenario: str):

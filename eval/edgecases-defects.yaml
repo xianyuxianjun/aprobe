@@ -1,0 +1,40 @@
+# 评估样例集：按**接口**锚定的缺陷集，专门用于比较不同来源的用例集。
+#
+# 为什么不能按 case_id 标注：不同设计者给用例起的 id 不一样。接真实模型时，
+# 模型产出的 7 条用例因为 id 与人工用例不同而全部被忽略，对比表显示 +0.0%。
+# 缺陷是客观的（我注入了什么），用例 id 是主观的，所以标注要绑在缺陷上。
+#
+# 路径相对 aprobe.yaml 所在目录（本项目即仓库根）。
+version: 1
+name: edgecases-defects
+scenario: violating
+spec: examples/edgecases.yaml
+cases: cases/edgecases.yaml
+expectations:
+  - operation_id: getRequiredFields
+    verdict: failed
+    note: 缺必填 name，且多出 additionalProperties 禁止的字段
+  - operation_id: getEnumField
+    verdict: failed
+    note: 枚举越界：status=unknown
+  - operation_id: getNestedObject
+    verdict: failed
+    note: 嵌套类型错：email 是数字、tags 含数字
+  - operation_id: getNumberShapes
+    verdict: failed
+    note: 数值形状错：ratio/count/flag 类型全错
+  - operation_id: getPagination
+    verdict: failed
+    note: 结构合法，但 total 与 items 条数不一致 —— 只有业务规则断言能发现
+  - operation_id: getEmptyList
+    verdict: failed
+    note: 空列表接口返回 1 条却声称 total=0 —— 同上
+  - operation_id: getNoContent
+    verdict: failed
+    note: 契约 204，实现返回 200 且带 body
+  - operation_id: getRedirect
+    verdict: failed
+    note: 契约 302，实现返回 301
+  - operation_id: getBrokenJson
+    verdict: inconclusive
+    note: 声明 application/json 但响应不是 JSON：无法校验，只能说无法判定

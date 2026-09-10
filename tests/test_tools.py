@@ -75,7 +75,8 @@ def test_list_operations_reports_coverage(registry) -> None:
     assert result.payload["total"] == 6
     by_id = {item["operation_id"]: item for item in result.payload["operations"]}
     assert by_id["getPetById"]["has_required_input"] is True
-    assert by_id["listPets"]["already_covered"] is False
+    assert by_id["listPets"]["existing_case_ids"] == []
+    assert by_id["listPets"]["assertion_depth"] == "schema"
     assert by_id["listPets"]["declared_responses"] == ["200"]
 
 
@@ -175,3 +176,56 @@ def test_history_is_derived_from_test_runs() -> None:
     )
     history = history_from_runs([run])
     assert history["listPets"][0]["verdict"] == "failed"
+
+
+def test_assertion_depth_distinguishes_schema_value_and_rule() -> None:
+    """这是给模型的信号：schema 层的用例挡不住实现违约，所以还能继续加深。"""
+    from aprobe.models import Assertion, AssertionKind
+    from aprobe.tools import assertion_depth, describe_assertion
+
+    schema_level = [
+        Assertion(kind=AssertionKind.STATUS, **{"in": [200]}),
+        Assertion(kind=AssertionKind.JSON_SCHEMA, response="200"),
+    ]
+    assert assertion_depth(schema_level) == "schema"
+
+    value_level = [*schema_level, Assertion(kind=AssertionKind.JSON_PATH, path="$.total", type="integer")]
+    assert assertion_depth(value_level) == "value"
+
+    rule_level = [
+        *value_level,
+        Assertion(kind=AssertionKind.JSON_PATH, path="$.items", length_equals_path="$.total"),
+    ]
+    assert assertion_depth(rule_level) == "rule"
+    assert assertion_depth([]) == "schema"
+
+    assert describe_assertion(schema_level[0]) == "status in [200]"
+    assert "length_equals_path" in describe_assertion(rule_level[-1])
+
+
+def test_lists_existing_cases_with_their_depth(edge_specification, edge_cases_path) -> None:
+    from aprobe.cases import load_case_file
+
+    existing = load_case_file(edge_cases_path)
+    registry = ToolRegistry(PlanContext(edge_specification, existing_cases=existing))
+    payload = registry.call("list_existing_cases", {}).payload
+    by_id = {item["id"]: item for item in payload["cases"]}
+    # 确定性生成只做到 schema 层；人工补的那条做到了 rule 层
+    assert by_id["get-pagination"]["assertion_depth"] == "schema"
+    assert by_id["edge-pagination-total-matches-items"]["assertion_depth"] == "rule"
+    assert any("length_equals_path" in item for item in by_id["edge-pagination-total-matches-items"]["asserts"])
+    assert "schema 层" in payload["note"]
+
+
+def test_list_operations_aggregates_depth_from_its_cases(edge_specification, edge_cases_path) -> None:
+    from aprobe.cases import load_case_file
+
+    existing = load_case_file(edge_cases_path)
+    registry = ToolRegistry(PlanContext(edge_specification, existing_cases=existing))
+    by_id = {
+        item["operation_id"]: item
+        for item in registry.call("list_operations", {}).payload["operations"]
+    }
+    assert by_id["getPagination"]["assertion_depth"] == "rule"
+    assert "edge-pagination-total-matches-items" in by_id["getPagination"]["existing_case_ids"]
+    assert by_id["getRequiredFields"]["assertion_depth"] == "schema"

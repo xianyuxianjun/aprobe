@@ -451,9 +451,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="degraded",
         help="degraded 不调用模型；agent 用有界 Agent 循环；auto 有模型走 agent，否则降级",
     )
-    generate.add_argument("--max-steps", type=int, default=8, help="Agent 循环步数上限")
-    generate.add_argument("--max-tokens", type=int, default=24000, help="Agent 循环 token 上限")
-    generate.add_argument("--max-seconds", type=float, default=120.0, help="Agent 循环时长上限（秒）")
+    generate.add_argument("--max-steps", type=int, default=10, help="Agent 循环步数上限")
+    generate.add_argument("--max-tokens", type=int, default=60000, help="Agent 循环 token 上限")
+    generate.add_argument("--max-seconds", type=float, default=180.0, help="Agent 循环时长上限（秒）")
     generate.set_defaults(func=cmd_generate)
 
     validate = subparsers.add_parser("validate", help="离线校验用例文件（不联网、不调用模型）")
@@ -498,7 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(diagnose)
     diagnose.add_argument("--run", default=None, help="只归因指定 run_id；缺省归因全部未通过的运行")
     diagnose.add_argument("--max-steps", type=int, default=6, help="归因循环步数上限")
-    diagnose.add_argument("--max-tokens", type=int, default=24000, help="归因循环 token 上限")
+    diagnose.add_argument("--max-tokens", type=int, default=40000, help="归因循环 token 上限")
     diagnose.add_argument("--max-seconds", type=float, default=90.0, help="归因循环时长上限（秒）")
     diagnose.add_argument("--json", default=None, help="导出归因的路径")
     diagnose.set_defaults(func=cmd_diagnose)

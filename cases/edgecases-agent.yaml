@@ -158,9 +158,9 @@ cases:
   requires: []
   write: false
   origin: deterministic
-- id: edge-pagination-total-matches-items
+- id: rule-pagination-total-equals-items
   operation_id: getPagination
-  summary: 业务规则：total 必须等于 items 的条数
+  summary: 业务规则：分页响应的 total 必须恰好等于 items 的条数，且 total 为非负整数
   request:
     method: GET
     path: /contracts/pagination
@@ -171,17 +171,21 @@ cases:
   - kind: status
     in:
     - 200
-  - kind: json_schema
-    response: '200'
+  - kind: json_path
+    path: $.total
+    type: integer
+  - kind: json_path
+    path: $.items
+    type: array
   - kind: json_path
     path: $.items
     length_equals_path: $.total
   requires: []
   write: false
   origin: agent
-- id: edge-empty-total-matches-items
+- id: rule-empty-list-total-zero
   operation_id: getEmptyList
-  summary: 空列表也必须满足 total == len(items)
+  summary: 业务规则：空列表场景 items 条数为 0，且 total 必须为 0，两者保持一致
   request:
     method: GET
     path: /contracts/empty
@@ -192,30 +196,149 @@ cases:
   - kind: status
     in:
     - 200
-  - kind: json_schema
-    response: '200'
+  - kind: json_path
+    path: $.items
+    length_equals: 0
+  - kind: json_path
+    path: $.total
+    equals: 0
   - kind: json_path
     path: $.items
     length_equals_path: $.total
   requires: []
   write: false
   origin: agent
-- id: edge-redirect-is-not-followed
-  operation_id: getRedirect
-  summary: 契约允许 302；要断言的是重定向本身没被跟随
+- id: rule-required-fields-name-not-empty
+  operation_id: getRequiredFields
+  summary: 取值层：必填字段 id/name 必须存在，id 为整数，name 受 minLength=1 约束不可为空串
   request:
     method: GET
-    path: /contracts/redirect
+    path: /contracts/required
     path_values: {}
     query: {}
     headers: {}
   assertions:
   - kind: status
     in:
-    - 302
-  - kind: header
-    name: location
-    contains: /contracts/required
+    - 200
+  - kind: json_path
+    path: $.id
+    exists: true
+  - kind: json_path
+    path: $.id
+    type: integer
+  - kind: json_path
+    path: $.name
+    exists: true
+  - kind: json_path
+    path: $.name
+    type: string
+  - kind: json_path
+    path: $.name
+    min_length: 1
+  requires: []
+  write: false
+  origin: agent
+- id: value-enum-status-shape
+  operation_id: getEnumField
+  summary: 取值层：status 必须存在且为字符串（枚举成员本身只能用 schema 断言，path 层无法表达 in 语义）
+  request:
+    method: GET
+    path: /contracts/enum
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_path
+    path: $.status
+    exists: true
+  - kind: json_path
+    path: $.status
+    type: string
+  requires: []
+  write: false
+  origin: agent
+- id: value-nested-owner-inner-shapes
+  operation_id: getNestedObject
+  summary: 取值层：owner 为对象，其必填字段 email 为字符串、tags 为数组，逐层下钻而非只验顶层结构
+  request:
+    method: GET
+    path: /contracts/nested
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_path
+    path: $.owner
+    type: object
+  - kind: json_path
+    path: $.owner.email
+    exists: true
+  - kind: json_path
+    path: $.owner.email
+    type: string
+  - kind: json_path
+    path: $.owner.tags
+    exists: true
+  - kind: json_path
+    path: $.owner.tags
+    type: array
+  requires: []
+  write: false
+  origin: agent
+- id: value-number-shapes-types
+  operation_id: getNumberShapes
+  summary: 取值层：ratio 必须是 number 而非被强转成 integer，count 必须是 integer，flag 必须是 boolean
+  request:
+    method: GET
+    path: /contracts/numbers
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_path
+    path: $.ratio
+    exists: true
+  - kind: json_path
+    path: $.ratio
+    type: number
+  - kind: json_path
+    path: $.count
+    type: integer
+  - kind: json_path
+    path: $.flag
+    type: boolean
+  requires: []
+  write: false
+  origin: agent
+- id: value-broken-json-status-path
+  operation_id: getBrokenJson
+  summary: 取值层：该响应虽声明为 application/json，仍按契约要求断言 $.status 可解析且为字符串，用于区分"结构不符"与"根本无法解析"
+  request:
+    method: GET
+    path: /contracts/broken-json
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_path
+    path: $.status
+    exists: true
+  - kind: json_path
+    path: $.status
+    type: string
   requires: []
   write: false
   origin: agent

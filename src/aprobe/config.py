@@ -19,6 +19,8 @@ from .errors import ConfigError
 
 DEFAULT_CONFIG_NAME = "aprobe.yaml"
 ENV_FILE_NAME = ".env"
+#: 设为非空即忽略 `.env`，只用真实环境变量。CI 与测试用它保证确定性。
+ENV_FILE_DISABLE = "APROBE_NO_ENV_FILE"
 
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -110,6 +112,8 @@ def effective_environment(directory: Path, environ: Mapping[str, str]) -> dict[s
     否则 CI 与本地调试会互相打架。
     """
     values = dict(environ)
+    if values.get(ENV_FILE_DISABLE):
+        return values
     path = directory / ENV_FILE_NAME
     if path.is_file():
         for key, value in parse_env_file(path.read_text(encoding="utf-8")).items():
