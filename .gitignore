@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# 运行产物：Trace 与报告不进 Git；用例文件进 Git（见 ADR-0001）
+.aprobe/
+*.db
+reports/

@@ -1,0 +1,174 @@
+"""报告导出。
+
+边界：报告只陈述 Trace 里已记录的事实；没有依据的推断不写进去，
+并且必须显式声明"结果不等于完整保证"，同时列出未执行、失败与无法验证的测试。
+"""
+
+from __future__ import annotations
+
+import json
+import xml.etree.ElementTree as ElementTree
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from .models import TerminationReason, TestRun, Verdict
+
+
+@dataclass
+class ReportMeta:
+    spec_source: str = ""
+    spec_title: str = ""
+    spec_version: str = ""
+    target: str = ""
+    cases_file: str = ""
+    aprobe_version: str = ""
+    planner_version: str = ""
+    generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def summarize(runs: list[TestRun]) -> dict[str, int]:
+    summary = {"total": len(runs), "passed": 0, "failed": 0, "inconclusive": 0, "policy_denied": 0, "request_failed": 0}
+    for run in runs:
+        summary[run.verdict.value] += 1
+        if run.termination_reason is TerminationReason.POLICY_DENIED:
+            summary["policy_denied"] += 1
+        if run.termination_reason is TerminationReason.REQUEST_FAILED:
+            summary["request_failed"] += 1
+    return summary
+
+
+def _meta_block(meta: ReportMeta) -> list[str]:
+    return [
+        f"- 规范：`{meta.spec_source}`（{meta.spec_title} {meta.spec_version}）",
+        f"- 用例文件：`{meta.cases_file}`",
+        f"- 被测目标：`{meta.target}`",
+        f"- aprobe：{meta.aprobe_version}　规划器：{meta.planner_version}",
+        f"- 生成时间：{meta.generated_at.isoformat(timespec='seconds')}",
+    ]
+
+
+def render_markdown(runs: list[TestRun], meta: ReportMeta) -> str:
+    summary = summarize(runs)
+    lines: list[str] = ["# aprobe 接口契约测试报告", "", "## 运行范围", "", *_meta_block(meta), ""]
+    lines += [
+        "## 结果汇总",
+        "",
+        "| 结论 | 数量 |",
+        "| --- | --- |",
+        f"| 通过 | {summary['passed']} |",
+        f"| 失败 | {summary['failed']} |",
+        f"| 无法判定 | {summary['inconclusive']} |",
+        f"| 合计 | {summary['total']} |",
+        "",
+        f"其中因策略被拒绝 {summary['policy_denied']} 条，因请求未完成 {summary['request_failed']} 条。",
+        "",
+        "## 逐条结果",
+        "",
+    ]
+    for run in runs:
+        lines += [
+            f"### `{run.case_id}` → {run.verdict.value}",
+            "",
+            f"- Operation：`{run.operation_id}`",
+            f"- 终止原因：`{run.termination_reason.value}`",
+            f"- 请求：`{run.request.get('method', '')} {run.request.get('url', '')}`",
+            f"- Trace：`run_id={run.run_id}`　耗时 {run.duration_ms}ms",
+        ]
+        if run.observation.error:
+            lines.append(f"- 未收到响应：{run.observation.error}")
+        if run.observation.status_code is not None:
+            lines.append(f"- 状态码：{run.observation.status_code}")
+        if run.assertion_results:
+            lines += ["", "| Assertion | 结论 | 观察 | 说明 |", "| --- | --- | --- | --- |"]
+            for result in run.assertion_results:
+                detail = result.detail.replace("|", "\\|")
+                observed = result.observed.replace("|", "\\|")
+                lines.append(f"| `{result.assertion.kind.value}` | {result.verdict.value} | {observed} | {detail} |")
+        lines.append("")
+
+    not_passed = [run for run in runs if run.verdict is not Verdict.PASSED]
+    lines += ["## 未通过、无法判定与未执行的测试", ""]
+    if not_passed:
+        for run in not_passed:
+            lines.append(f"- `{run.case_id}`：{run.verdict.value}（{run.termination_reason.value}）")
+    else:
+        lines.append("- 无")
+    lines += [
+        "",
+        "## 声明",
+        "",
+        "本报告只覆盖上述用例文件中已确认的测试范围；结果不等于完整保证，",
+        "未验证的部分不等于不存在问题。所有结论均来自确定性 Assertion 求值，",
+        "模型只参与用例设计与失败解释，不参与判定。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _runs_payload(runs: list[TestRun], meta: ReportMeta) -> dict[str, object]:
+    return {
+        "meta": {
+            "spec_source": meta.spec_source,
+            "spec_title": meta.spec_title,
+            "spec_version": meta.spec_version,
+            "target": meta.target,
+            "cases_file": meta.cases_file,
+            "aprobe_version": meta.aprobe_version,
+            "planner_version": meta.planner_version,
+            "generated_at": meta.generated_at.isoformat(),
+        },
+        "summary": summarize(runs),
+        "runs": [json.loads(run.model_dump_json()) for run in runs],
+    }
+
+
+def render_json(runs: list[TestRun], meta: ReportMeta) -> str:
+    return json.dumps(_runs_payload(runs, meta), ensure_ascii=False, indent=2)
+
+
+def render_junit(runs: list[TestRun], meta: ReportMeta) -> str:
+    summary = summarize(runs)
+    suite = ElementTree.Element(
+        "testsuite",
+        {
+            "name": "aprobe",
+            "tests": str(summary["total"]),
+            "failures": str(summary["failed"]),
+            "errors": str(summary["request_failed"] + summary["policy_denied"]),
+            "skipped": str(summary["inconclusive"]),
+            "timestamp": meta.generated_at.isoformat(timespec="seconds"),
+            "hostname": meta.target or "unknown",
+        },
+    )
+    properties = ElementTree.SubElement(suite, "properties")
+    for name, value in (
+        ("spec_source", meta.spec_source),
+        ("spec_version", meta.spec_version),
+        ("cases_file", meta.cases_file),
+        ("aprobe_version", meta.aprobe_version),
+    ):
+        ElementTree.SubElement(properties, "property", {"name": name, "value": value})
+
+    for run in runs:
+        testcase = ElementTree.SubElement(
+            suite,
+            "testcase",
+            {"classname": run.operation_id, "name": run.case_id, "time": f"{run.duration_ms / 1000:.3f}"},
+        )
+        detail = "; ".join(
+            f"{result.assertion.kind.value}={result.verdict.value} ({result.observed})"
+            for result in run.assertion_results
+        ) or run.observation.error or run.termination_reason.value
+        if run.verdict is Verdict.FAILED:
+            failure = ElementTree.SubElement(testcase, "failure", {"message": run.termination_reason.value})
+            failure.text = detail
+        elif run.termination_reason in (TerminationReason.POLICY_DENIED, TerminationReason.REQUEST_FAILED):
+            error = ElementTree.SubElement(testcase, "error", {"message": run.termination_reason.value})
+            error.text = detail
+        elif run.verdict is Verdict.INCONCLUSIVE:
+            skipped = ElementTree.SubElement(testcase, "skipped", {"message": "无法判定"})
+            skipped.text = detail
+    return ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+RENDERERS = {"md": render_markdown, "json": render_json, "junit": render_junit}

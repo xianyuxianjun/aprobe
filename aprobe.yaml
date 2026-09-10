@@ -1,0 +1,24 @@
+version: 1
+spec: examples/petstore.yaml
+cases: cases/petstore.yaml
+trace_db: .aprobe/trace.db
+
+target:
+  base_url: http://127.0.0.1:8080
+  # 允许范围就是唯一的访问控制：没有它，aprobe 拒绝一切目标
+  allow:
+    - 127.0.0.1
+    - localhost
+
+limits:
+  timeout_ms: 3000
+  max_response_bytes: 65536
+  retries: 1
+
+auth:
+  # 只出现凭据的引用名；值从环境变量读取，永不落库
+  scheme: bearer
+  env: APROBE_TOKEN
+
+# 写操作默认拒绝，需要显式改为 true 并配合用例里的 write: true
+allow_write: false

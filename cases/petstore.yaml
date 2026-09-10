@@ -1,0 +1,123 @@
+version: 1
+cases:
+- id: get-health
+  operation_id: getHealth
+  summary: 健康检查
+  request:
+    method: GET
+    path: /health
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    pointer: '#/paths/~1health/get/responses/200/content/application~1json/schema'
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-pet-stats
+  operation_id: getPetStats
+  summary: 宠物统计
+  request:
+    method: GET
+    path: /pets/stats
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    pointer: '#/paths/~1pets~1stats/get/responses/200/content/application~1json/schema'
+  requires: []
+  write: false
+  origin: deterministic
+- id: list-pets
+  operation_id: listPets
+  summary: 列出全部宠物
+  request:
+    method: GET
+    path: /pets
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    pointer: '#/paths/~1pets/get/responses/200/content/application~1json/schema'
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-pet-by-id
+  operation_id: getPetById
+  summary: 按 id 查询宠物，校验嵌套对象结构与字段类型
+  request:
+    method: GET
+    path: /pets/{petId}
+    path_values:
+      petId: '1'
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    pointer: '#/components/schemas/Pet'
+  - kind: json_path
+    path: $.owner.email
+    type: string
+  - kind: json_path
+    path: $.name
+    min_length: 1
+  origin: human
+- id: get-pet-by-id-not-found
+  operation_id: getPetById
+  summary: 不存在的 id 必须返回 404，而不是 200 或 500
+  request:
+    method: GET
+    path: /pets/{petId}
+    path_values:
+      petId: '999'
+  assertions:
+  - kind: status
+    in:
+    - 404
+  - kind: json_schema
+    pointer: '#/components/schemas/ApiError'
+  origin: human
+- id: get-pet-owner-without-credential
+  operation_id: getPetOwner
+  summary: 未带凭据访问受保护接口：契约允许 401，但不允许 200
+  request:
+    method: GET
+    path: /pets/{petId}/owners
+    path_values:
+      petId: '1'
+  assertions:
+  - kind: status
+    in:
+    - 200
+    - 401
+  - kind: header
+    name: content-type
+    contains: application/json
+  origin: human
+- id: list-pets-total-matches-items
+  operation_id: listPets
+  summary: 业务规则：total 必须等于 items 的条数（schema 校验不出来的跨字段约束）
+  request:
+    method: GET
+    path: /pets
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_path
+    path: $.items
+    length_equals_path: $.total
+  origin: human
