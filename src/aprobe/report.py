@@ -12,19 +12,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .errors import ExitCode
-from .models import TerminationReason, TestRun, Verdict
+from .models import RunProvenance, TerminationReason, TestRun, Verdict
 
 
 @dataclass
 class ReportMeta:
-    spec_source: str = ""
-    spec_title: str = ""
-    spec_version: str = ""
-    target: str = ""
-    cases_file: str = ""
-    aprobe_version: str = ""
-    planner_version: str = ""
+    """报告的元信息。它的唯一来源是 Trace（ADR-0002），因此不可能与 Trace 不一致。"""
+
+    provenance: RunProvenance = field(default_factory=RunProvenance)
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    def from_runs(cls, runs: list[TestRun]) -> "ReportMeta":
+        return cls(provenance=runs[0].provenance if runs else RunProvenance())
 
 
 def summarize(runs: list[TestRun]) -> dict[str, int]:
@@ -39,11 +39,12 @@ def summarize(runs: list[TestRun]) -> dict[str, int]:
 
 
 def _meta_block(meta: ReportMeta) -> list[str]:
+    provenance = meta.provenance
     return [
-        f"- 规范：`{meta.spec_source}`（{meta.spec_title} {meta.spec_version}）",
-        f"- 用例文件：`{meta.cases_file}`",
-        f"- 被测目标：`{meta.target}`",
-        f"- aprobe：{meta.aprobe_version}　规划器：{meta.planner_version}",
+        f"- 规范：`{provenance.spec_source}`（{provenance.spec_title} {provenance.spec_version}）",
+        f"- 用例文件：`{provenance.cases_file}`",
+        f"- 被测目标：`{provenance.target}`",
+        f"- aprobe：{provenance.aprobe_version}　规划器：{provenance.planner}",
         f"- 生成时间：{meta.generated_at.isoformat(timespec='seconds')}",
     ]
 
@@ -107,15 +108,16 @@ def render_markdown(runs: list[TestRun], meta: ReportMeta) -> str:
 
 
 def _runs_payload(runs: list[TestRun], meta: ReportMeta) -> dict[str, object]:
+    provenance = meta.provenance
     return {
         "meta": {
-            "spec_source": meta.spec_source,
-            "spec_title": meta.spec_title,
-            "spec_version": meta.spec_version,
-            "target": meta.target,
-            "cases_file": meta.cases_file,
-            "aprobe_version": meta.aprobe_version,
-            "planner_version": meta.planner_version,
+            "spec_source": provenance.spec_source,
+            "spec_title": provenance.spec_title,
+            "spec_version": provenance.spec_version,
+            "target": provenance.target,
+            "cases_file": provenance.cases_file,
+            "aprobe_version": provenance.aprobe_version,
+            "planner": provenance.planner,
             "generated_at": meta.generated_at.isoformat(),
         },
         "summary": summarize(runs),
@@ -138,15 +140,16 @@ def render_junit(runs: list[TestRun], meta: ReportMeta) -> str:
             "errors": str(summary["request_failed"] + summary["policy_denied"]),
             "skipped": str(summary["inconclusive"]),
             "timestamp": meta.generated_at.isoformat(timespec="seconds"),
-            "hostname": meta.target or "unknown",
+            "hostname": meta.provenance.target or "unknown",
         },
     )
     properties = ElementTree.SubElement(suite, "properties")
     for name, value in (
-        ("spec_source", meta.spec_source),
-        ("spec_version", meta.spec_version),
-        ("cases_file", meta.cases_file),
-        ("aprobe_version", meta.aprobe_version),
+        ("spec_source", meta.provenance.spec_source),
+        ("spec_version", meta.provenance.spec_version),
+        ("cases_file", meta.provenance.cases_file),
+        ("aprobe_version", meta.provenance.aprobe_version),
+        ("planner", meta.provenance.planner),
     ):
         ElementTree.SubElement(properties, "property", {"name": name, "value": value})
 

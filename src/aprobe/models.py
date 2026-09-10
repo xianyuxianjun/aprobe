@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 APROBE_VERSION = "0.0.1"
 DETERMINISTIC_PLANNER_VERSION = "deterministic-0.0.1"
+AGENT_PLANNER_VERSION = "agent-0.0.1"
 
 
 class Verdict(str, enum.Enum):
@@ -236,6 +237,22 @@ class Specification(BaseModel):
         return bundle_local_refs(node, self.document)
 
 
+class RunProvenance(BaseModel):
+    """一次运行“谁在什么时候测了什么”的全部事实。
+
+    报告不另外接收这些参数，而是从 Trace 里读它们（ADR-0002），
+    这样报告不可能与 Trace 不一致。
+    """
+
+    target: str = ""
+    spec_source: str = ""
+    spec_title: str = ""
+    spec_version: str = ""
+    cases_file: str = ""
+    aprobe_version: str = APROBE_VERSION
+    planner: str = DETERMINISTIC_PLANNER_VERSION
+
+
 class RequestSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -292,7 +309,6 @@ class TestRun(BaseModel):
     run_id: str
     case_id: str
     operation_id: str
-    target: str
     started_at: datetime
     duration_ms: int
     verdict: Verdict
@@ -300,7 +316,75 @@ class TestRun(BaseModel):
     request: dict[str, Any] = Field(default_factory=dict)
     observation: Observation = Field(default_factory=Observation)
     assertion_results: list[AssertionResult] = Field(default_factory=list)
-    spec_source: str = ""
-    spec_version: str = ""
-    aprobe_version: str = APROBE_VERSION
-    planner_version: str = DETERMINISTIC_PLANNER_VERSION
+    provenance: RunProvenance = Field(default_factory=RunProvenance)
+
+
+class ToolCallRecord(BaseModel):
+    """Agent 对某个已注册工具的一次调用。它是执行事实，不是模型自述。"""
+
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    ok: bool
+    result_summary: str = ""
+    duration_ms: int = 0
+    error: str = ""
+
+
+class AgentStep(BaseModel):
+    """Agent 循环中的一次迭代：一次模型请求 + 它产生的工具调用。"""
+
+    index: int
+    started_at: datetime
+    duration_ms: int = 0
+    model: str = ""
+    prompt_version: str = ""
+    text: str = ""
+    tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class AgentBudget(BaseModel):
+    """一次 Agent 循环允许消耗的上限。耗尽不是通过，也不是失败。"""
+
+    max_steps: int = 8
+    max_tokens: int = 24000
+    max_ms: int = 120_000
+
+
+class AgentRun(BaseModel):
+    """Agent 循环的权威轨迹。与 TestRun 分开保存：它描述“怎么想出来的”，不是“测出了什么”。"""
+
+    run_id: str
+    mode: Literal["degraded", "agent"]
+    model: str = ""
+    prompt_version: str = ""
+    budget: AgentBudget = Field(default_factory=AgentBudget)
+    termination_reason: TerminationReason
+    steps: list[AgentStep] = Field(default_factory=list)
+    produced_case_ids: list[str] = Field(default_factory=list)
+    needs_input: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def consumed_steps(self) -> int:
+        return len(self.steps)
+
+    @property
+    def consumed_tokens(self) -> int:
+        return sum(step.input_tokens + step.output_tokens for step in self.steps)
+
+    @property
+    def consumed_ms(self) -> int:
+        return sum(step.duration_ms for step in self.steps)
+
+    def budget_exhausted(self, elapsed_ms: int) -> str | None:
+        """返回耗尽的原因；未耗尽时返回 None。"""
+        if self.consumed_steps >= self.budget.max_steps:
+            return f"达到步数上限 {self.budget.max_steps}"
+        if self.consumed_tokens >= self.budget.max_tokens:
+            return f"达到 token 上限 {self.budget.max_tokens}"
+        if elapsed_ms >= self.budget.max_ms:
+            return f"达到时长上限 {self.budget.max_ms}ms"
+        return None

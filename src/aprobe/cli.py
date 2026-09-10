@@ -16,7 +16,7 @@ from .cases import dump_case_file, load_case_file, operations_by_id, order_cases
 from .config import DEFAULT_CONFIG_NAME, Config, load_config
 from .errors import AprobeError, CaseFileError, ConfigError, ExitCode, SpecError
 from .generator import generate_cases
-from .models import APROBE_VERSION, DETERMINISTIC_PLANNER_VERSION, TerminationReason, TestRun, Verdict
+from .models import APROBE_VERSION, DETERMINISTIC_PLANNER_VERSION, RunProvenance, TestRun
 from .policy import TargetPolicy
 from .report import RENDERERS, ReportMeta, gate_exit_code, summarize
 from .runner import CredentialProvider, TestRunner
@@ -131,16 +131,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         environ=dict(os.environ),
     )
     store = TraceStore(config.resolve(base, config.trace_db))
+    provenance = RunProvenance(
+        target=config.target.base_url,
+        spec_source=str(spec_path),
+        spec_title=specification.title,
+        spec_version=specification.version,
+        cases_file=str(cases_path),
+        planner=DETERMINISTIC_PLANNER_VERSION,
+    )
 
     runs: list[TestRun] = []
     for case in order_cases(cases):
-        run = runner.execute(
-            case=case,
-            operation=by_id[case.operation_id],
-            base_url=config.target.base_url,
-            spec_source=str(spec_path),
-            spec_version=f"{specification.title} {specification.version}".strip(),
-        )
+        run = runner.execute(case=case, operation=by_id[case.operation_id], provenance=provenance)
         store.record(run)
         runs.append(run)
         print(f"{run.verdict.value:>12}  {case.id}  ({run.duration_ms}ms, {run.termination_reason.value})")
@@ -152,15 +154,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     print(f"Trace 已记录到 {config.resolve(base, config.trace_db)}")
 
-    meta = ReportMeta(
-        spec_source=str(spec_path),
-        spec_title=specification.title,
-        spec_version=specification.version,
-        target=config.target.base_url,
-        cases_file=str(cases_path),
-        aprobe_version=APROBE_VERSION,
-        planner_version=DETERMINISTIC_PLANNER_VERSION,
-    )
+    meta = ReportMeta.from_runs(runs)
     for flag, fmt in (("json", "json"), ("junit", "junit"), ("markdown", "md")):
         destination = getattr(args, flag)
         if destination:
@@ -191,15 +185,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if not runs:
         raise CaseFileError("Trace 中还没有任何运行记录")
 
-    meta = ReportMeta(
-        spec_source=str(spec_path),
-        spec_title=specification.title,
-        spec_version=specification.version,
-        target=config.target.base_url,
-        cases_file=str(cases_path) if cases_path else config.cases,
-        aprobe_version=APROBE_VERSION,
-        planner_version=DETERMINISTIC_PLANNER_VERSION,
-    )
+    meta = ReportMeta.from_runs(runs)
     content = RENDERERS[args.format](runs, meta)
     if args.out:
         print(f"报告已写入 {_write(Path(args.out), content)}")

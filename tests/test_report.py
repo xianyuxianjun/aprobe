@@ -4,7 +4,7 @@ import json
 import xml.etree.ElementTree as ElementTree
 from datetime import datetime, timezone
 
-from aprobe.models import Observation, TerminationReason, TestRun, Verdict
+from aprobe.models import Observation, RunProvenance, TerminationReason, TestRun, Verdict
 from aprobe.report import ReportMeta, gate_exit_code, render_json, render_junit, render_markdown, summarize
 
 
@@ -13,7 +13,6 @@ def make_run(case_id: str, verdict: Verdict, reason: TerminationReason = Termina
         run_id=f"run-{case_id}",
         case_id=case_id,
         operation_id="listPets",
-        target="http://127.0.0.1:8080",
         started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         duration_ms=12,
         verdict=verdict,
@@ -21,6 +20,13 @@ def make_run(case_id: str, verdict: Verdict, reason: TerminationReason = Termina
         request={"method": "GET", "url": "http://127.0.0.1:8080/pets"},
         observation=Observation(status_code=200, body_text="{}", body_json={}),
         assertion_results=[],
+        provenance=RunProvenance(
+            target="http://127.0.0.1:8080",
+            spec_source="examples/petstore.yaml",
+            spec_title="Petstore Baseline",
+            spec_version="1.0.0",
+            cases_file="cases/petstore.yaml",
+        ),
     )
 
 
@@ -42,14 +48,14 @@ def test_summarize_counts_verdicts_and_reasons() -> None:
 
 
 def test_markdown_declares_limits_and_lists_unfinished_cases() -> None:
-    text = render_markdown(runs(), ReportMeta(spec_source="examples/petstore.yaml", target="http://127.0.0.1:8080"))
+    text = render_markdown(runs(), ReportMeta.from_runs(runs()))
     assert "结果不等于完整保证" in text
     assert "`b`" in text and "`c`" in text
     assert "| 通过 | 1 |" in text
 
 
 def test_json_report_is_machine_readable() -> None:
-    payload = json.loads(render_json(runs(), ReportMeta()))
+    payload = json.loads(render_json(runs(), ReportMeta.from_runs(runs())))
     assert payload["summary"]["total"] == 3
     assert [item["case_id"] for item in payload["runs"]] == ["a", "b", "c"]
 
@@ -72,7 +78,7 @@ def test_gate_exit_code_priorities() -> None:
 
 
 def test_junit_report_maps_verdicts_to_elements() -> None:
-    root = ElementTree.fromstring(render_junit(runs(), ReportMeta(target="http://127.0.0.1:8080")))
+    root = ElementTree.fromstring(render_junit(runs(), ReportMeta.from_runs(runs())))
     assert root.tag == "testsuite"
     assert root.attrib["tests"] == "3"
     assert root.attrib["failures"] == "1"

@@ -19,7 +19,7 @@ import httpx
 
 from .assertions import AssertionEvaluator, decide_verdict
 from .errors import PolicyDeniedError
-from .models import Operation, Observation, TestCase, TestRun, Verdict
+from .models import Operation, Observation, RunProvenance, TestCase, TestRun, Verdict
 from .policy import TargetPolicy
 from .sanitizer import REDACTED, sanitize_headers, sanitize_text, sanitize_value, truncate
 
@@ -134,7 +134,7 @@ class TestRunner:
         self.credentials = credentials or CredentialProvider()
         self.environ = environ or {}
 
-    def execute(self, case: TestCase, operation: Operation, base_url: str, spec_source: str, spec_version: str) -> TestRun:
+    def execute(self, case: TestCase, operation: Operation, provenance: RunProvenance) -> TestRun:
         from .models import TerminationReason
 
         request_started = datetime.now(timezone.utc)
@@ -145,7 +145,7 @@ class TestRunner:
                 run_id=run_id,
                 case_id=case.id,
                 operation_id=case.operation_id,
-                target=base_url,
+                provenance=provenance,
                 started_at=request_started,
                 duration_ms=0,
                 verdict=Verdict.INCONCLUSIVE,
@@ -153,12 +153,10 @@ class TestRunner:
                 request=request_record,
                 observation=Observation(error=f"{reason}: {detail}"),
                 assertion_results=[],
-                spec_source=spec_source,
-                spec_version=spec_version,
             )
 
         try:
-            built = build_request(case, operation, base_url)
+            built = build_request(case, operation, provenance.target)
         except PolicyDeniedError as exc:
             return denied_run(
                 "请求构造被拒绝",
@@ -194,7 +192,7 @@ class TestRunner:
                 run_id=run_id,
                 case_id=case.id,
                 operation_id=case.operation_id,
-                target=base_url,
+                provenance=provenance,
                 started_at=send_started,
                 duration_ms=0,
                 verdict=Verdict.INCONCLUSIVE,
@@ -202,8 +200,6 @@ class TestRunner:
                 request=request_record,
                 observation=Observation(error=error),
                 assertion_results=[],
-                spec_source=spec_source,
-                spec_version=spec_version,
             )
 
         results = self.evaluator.evaluate_all(case.assertions, observation, operation.operation_id)
@@ -212,7 +208,7 @@ class TestRunner:
             run_id=run_id,
             case_id=case.id,
             operation_id=case.operation_id,
-            target=base_url,
+            provenance=provenance,
             started_at=send_started,
             duration_ms=observation.duration_ms,
             verdict=verdict,
@@ -220,8 +216,6 @@ class TestRunner:
             request=request_record,
             observation=observation,
             assertion_results=results,
-            spec_source=spec_source,
-            spec_version=spec_version,
         )
 
     def _send(self, built: BuiltRequest, headers: dict[str, str]) -> tuple[Observation | None, str | None]:

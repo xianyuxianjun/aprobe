@@ -15,6 +15,7 @@ from aprobe.models import (
     TestCase,
     Verdict,
 )
+from aprobe.models import RunProvenance
 from aprobe.policy import TargetPolicy
 from aprobe.runner import CredentialProvider, TestRunner, build_request
 
@@ -51,9 +52,7 @@ def test_conformant_run_passes_and_records_evidence(specification, conformant) -
     run = runner.execute(
         case("list-pets", "listPets", "GET", "/pets"),
         operations["listPets"],
-        conformant.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=conformant.base_url, spec_source=specification.source),
     )
     assert run.verdict is Verdict.PASSED
     assert run.termination_reason is TerminationReason.COMPLETED
@@ -80,9 +79,7 @@ def test_contract_violation_is_detected(specification, violating) -> None:
             ],
         ),
         operations["getPetStats"],
-        violating.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=violating.base_url, spec_source=specification.source),
     )
     assert run.verdict is Verdict.FAILED
     assert any(result.verdict is Verdict.FAILED for result in run.assertion_results)
@@ -94,9 +91,7 @@ def test_secret_in_response_is_redacted_before_recording(specification, conforma
     run = runner.execute(
         case("get-pet-by-id", "getPetById", "GET", "/pets/{petId}", path_values={"petId": "1"}),
         operations["getPetById"],
-        conformant.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=conformant.base_url, spec_source=specification.source),
     )
     assert run.verdict is Verdict.PASSED
     assert "mock-secret-token" not in run.observation.body_text
@@ -116,9 +111,7 @@ def test_credential_comes_from_environment_and_is_redacted(specification, confor
             assertions=[Assertion(kind=AssertionKind.STATUS, **{"in": [200, 401]})],
         ),
         operations["getPetOwner"],
-        conformant.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=conformant.base_url, spec_source=specification.source),
     )
     assert run.observation.status_code == 401
 
@@ -138,9 +131,7 @@ def test_credential_comes_from_environment_and_is_redacted(specification, confor
             assertions=[Assertion(kind=AssertionKind.STATUS, **{"in": [200, 401]})],
         ),
         operations["getPetOwner"],
-        conformant.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=conformant.base_url, spec_source=specification.source),
     )
     assert authorized.observation.status_code == 200
     assert authorized.request["headers"]["Authorization"] == "[REDACTED]"
@@ -153,9 +144,7 @@ def test_disallowed_target_never_leaves_the_process(specification, conformant) -
     run = runner.execute(
         case("list-pets", "listPets", "GET", "/pets"),
         operations["listPets"],
-        conformant.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=conformant.base_url, spec_source=specification.source),
     )
     assert run.verdict is Verdict.INCONCLUSIVE
     assert run.termination_reason is TerminationReason.POLICY_DENIED
@@ -168,9 +157,7 @@ def test_write_case_is_blocked_by_default(specification, conformant) -> None:
     run = runner.execute(
         case("create-pet", "createPet", "POST", "/pets", write=True),
         operations["createPet"],
-        conformant.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=conformant.base_url, spec_source=specification.source),
     )
     assert run.termination_reason is TerminationReason.POLICY_DENIED
 
@@ -181,9 +168,7 @@ def test_unsafe_path_value_is_rejected_before_any_request(specification, conform
     run = runner.execute(
         case("bad", "getPetById", "GET", "/pets/{petId}", path_values={"petId": "../../etc/passwd"}),
         operations["getPetById"],
-        conformant.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=conformant.base_url, spec_source=specification.source),
     )
     assert run.termination_reason is TerminationReason.POLICY_DENIED
     assert "路径穿越" in (run.observation.error or "")
@@ -195,9 +180,7 @@ def test_connection_failure_is_inconclusive(specification) -> None:
     run = runner.execute(
         case("list-pets", "listPets", "GET", "/pets"),
         operations["listPets"],
-        f"http://127.0.0.1:{closed_port()}",
-        specification.source,
-        specification.version,
+        RunProvenance(target=f"http://127.0.0.1:{closed_port()}", spec_source=specification.source),
     )
     assert run.verdict is Verdict.INCONCLUSIVE
     assert run.termination_reason is TerminationReason.REQUEST_FAILED
@@ -220,9 +203,7 @@ def test_system_proxy_is_not_trusted(specification, monkeypatch) -> None:
         run = runner.execute(
             case("list-pets", "listPets", "GET", "/pets"),
             operations["listPets"],
-            f"http://127.0.0.1:{closed_port()}",
-            specification.source,
-            specification.version,
+            RunProvenance(target=f"http://127.0.0.1:{closed_port()}", spec_source=specification.source),
         )
         assert run.termination_reason is TerminationReason.REQUEST_FAILED
         assert run.observation.status_code is None
@@ -245,9 +226,7 @@ def test_truncated_response_cannot_silently_pass(specification, conformant) -> N
             ],
         ),
         operations["listPets"],
-        conformant.base_url,
-        specification.source,
-        specification.version,
+        RunProvenance(target=conformant.base_url, spec_source=specification.source),
     )
     assert run.observation.truncated is True
     assert run.verdict is Verdict.INCONCLUSIVE
@@ -269,7 +248,9 @@ def test_committed_cases_all_pass_against_conformant_baseline(specification, cas
     cases = load_case_file(cases_path)
     verdicts = {
         item.id: runner.execute(
-            item, operations[item.operation_id], conformant.base_url, specification.source, specification.version
+            item,
+            operations[item.operation_id],
+            RunProvenance(target=conformant.base_url, spec_source=specification.source),
         ).verdict
         for item in cases
     }
