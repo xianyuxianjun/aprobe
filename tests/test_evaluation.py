@@ -11,11 +11,9 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 from conftest import write_config
 
 from aprobe.cli import main
-from aprobe.errors import ConfigError
 from aprobe.evaluation import EvalSuite, Expectation, evaluate_suite, load_suite, render_report
 from aprobe.models import Observation, TerminationReason, TestRun, Verdict
 

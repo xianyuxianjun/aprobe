@@ -128,7 +128,7 @@ def test_rejection_feedback_reaches_the_model(specification) -> None:
             reply(text="done"),
         ],
     )
-    run = loop.run().agent_run
+    loop.run()
     assert registry.context.submitted
     second_call_messages = client.calls[1]["messages"]
     tool_messages = [item for item in second_call_messages if item.get("role") == "tool"]

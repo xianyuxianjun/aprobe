@@ -17,7 +17,6 @@ from .cases import dump_case_file, load_case_file, operations_by_id, order_cases
 from .config import DEFAULT_CONFIG_NAME, Config, load_config
 from .errors import AprobeError, CaseFileError, ConfigError, ExitCode, SpecError
 from .evaluation import evaluate_suite, load_suite, render_report
-from .generator import generate_cases
 from .models import (
     APROBE_VERSION,
     AgentBudget,
@@ -385,7 +384,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     config, base, spec_path, cases_path = _load_context(args, require_config=True, require_cases=False)
     assert config is not None
 
-    specification = load_specification(spec_path)
+    # 报告完全从 Trace 推导（ADR-0002）：即使规范文件已经移动，历史报告仍然成立
     store = TraceStore(config.resolve(base, config.trace_db))
     if args.run:
         run = store.get(args.run)

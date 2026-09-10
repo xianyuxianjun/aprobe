@@ -21,7 +21,7 @@ from .assertions import AssertionEvaluator, decide_verdict
 from .errors import ConfigError, PolicyDeniedError
 from .models import Operation, Observation, RunProvenance, TestCase, TestRun, Verdict
 from .policy import TargetPolicy
-from .sanitizer import REDACTED, sanitize_headers, sanitize_text, sanitize_value, truncate
+from .sanitizer import sanitize_headers, sanitize_text, sanitize_value
 
 _MAX_VALUE_LENGTH = 512
 _SAFE_PARAM_NAME = re.compile(r"^[A-Za-z0-9_.\-\[\]]{1,64}$")

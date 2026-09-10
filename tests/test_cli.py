@@ -111,6 +111,21 @@ def test_report_command_reads_the_trace(config_factory, conformant, capsys) -> N
     assert payload["meta"]["target"] == conformant.base_url
 
 
+def test_report_survives_a_moved_specification(config_factory, conformant, tmp_path: Path, capsys) -> None:
+    """报告完全从 Trace 推导（ADR-0002）：规范文件后来变了，历史报告仍然成立。"""
+    spec_copy = tmp_path / "spec.yaml"
+    spec_copy.write_text((Path(__file__).resolve().parents[1] / "examples" / "petstore.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    config = config_factory(spec=spec_copy, base_url=conformant.base_url)
+    assert main(["run", "--config", str(config)]) == 0
+    capsys.readouterr()
+
+    spec_copy.unlink()  # 规范消失了，但已经发生的运行不能因此失真
+    assert main(["report", "--config", str(config), "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert str(spec_copy) in payload["meta"]["spec_source"]
+    assert payload["summary"]["passed"] == 7
+
+
 def test_junit_report_is_written(config_factory, conformant, tmp_path: Path) -> None:
     config = config_factory(base_url=conformant.base_url)
     junit = tmp_path / "junit.xml"
