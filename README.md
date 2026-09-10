@@ -119,6 +119,7 @@ mock/mock_service.py 版本化评估基准
 cases/petstore.yaml  示例用例文件（含人工补写的路径参数用例）
 examples/petstore.yaml
 docs/adr/            架构决策记录（0001 审批载体、0002 权威轨迹、0003 模式共用同一条流程）
+AGENTS.md            架构地图与设计理念：接手任务前先读
 CONTEXT.md           术语表与领域边界
 ```
 
@@ -131,6 +132,8 @@ CONTEXT.md           术语表与领域边界
 - 尚无 Agent 循环与预算，因此也还没有 token 成本与步数指标。
 
 ## 开发
+
+**改动前先读 [AGENTS.md](./AGENTS.md)**：它写了 seam 在哪、哪些模块必须保持深、禁止的模式，以及当前三笔已知的债。
 
 ```bash
 uv pip install -e '.[dev]'
