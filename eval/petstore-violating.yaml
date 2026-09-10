@@ -1,0 +1,25 @@
+# 评估样例集：violating 基准。
+#
+# 与 conformant 唯一的差别是 get-pet-stats 的 total 被故意改成字符串。
+# 它存在的意义：如果 aprobe 漏报了这个违约，指标会立刻掉下来。
+version: 1
+name: petstore-violating
+scenario: violating
+spec: examples/petstore.yaml
+cases: cases/petstore.yaml
+expectations:
+  - case_id: get-health
+    verdict: passed
+  - case_id: get-pet-by-id
+    verdict: passed
+  - case_id: get-pet-by-id-not-found
+    verdict: passed
+  - case_id: get-pet-owner-without-credential
+    verdict: passed
+  - case_id: get-pet-stats
+    verdict: failed
+    note: 契约声明 total 是 integer，实现返回了字符串
+  - case_id: list-pets
+    verdict: passed
+  - case_id: list-pets-total-matches-items
+    verdict: passed

@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from .assertions import AssertionEvaluator, decide_verdict
-from .errors import PolicyDeniedError
+from .errors import ConfigError, PolicyDeniedError
 from .models import Operation, Observation, RunProvenance, TestCase, TestRun, Verdict
 from .policy import TargetPolicy
 from .sanitizer import REDACTED, sanitize_headers, sanitize_text, sanitize_value, truncate
@@ -115,6 +115,30 @@ def build_request(case: TestCase, operation: Operation, base_url: str) -> BuiltR
     if body is not None and not isinstance(body, (dict, list)):
         raise PolicyDeniedError("请求体只支持 JSON 对象或数组")
     return BuiltRequest(url=url, method=case.request.method.upper(), headers=headers, json_body=body)
+
+
+def probe_baseline(policy: TargetPolicy, base_url: str, timeout_ms: int = 3000) -> dict[str, Any]:
+    """读取评估基准的自述身份。
+
+    这不是 TestRun：它不测接口，只确认“我们量的到底是哪个基准”。
+    它仍然走同一套策略检查与同一套不信任代理的约束。
+    """
+    url = base_url.rstrip("/") + "/__scenario"
+    decision = policy.check(url=url, method="GET")
+    if not decision.allowed:
+        raise PolicyDeniedError(decision.reason)
+    try:
+        response = httpx.get(url, timeout=timeout_ms / 1000, follow_redirects=False, trust_env=False)
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        # 基准不可达不是“测试失败”，而是“这次度量无意义”：它必须区别于断言失败
+        raise ConfigError(f"无法确认评估基准：{type(exc).__name__}: {exc}") from exc
+    except ValueError as exc:
+        raise ConfigError(f"评估基准返回的不是 JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ConfigError("评估基准返回的不是对象")
+    return payload
 
 
 class TestRunner:
@@ -273,4 +297,4 @@ class TestRunner:
         return None, last_error
 
 
-__all__ = ["BuiltRequest", "CredentialProvider", "TestRunner", "build_request"]
+__all__ = ["BuiltRequest", "CredentialProvider", "TestRunner", "build_request", "probe_baseline"]

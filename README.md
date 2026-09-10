@@ -34,10 +34,34 @@
 | CLI：`generate` / `validate` / `run` / `report` 与退出码语义 | 已实现 | `pytest tests/test_cli.py` |
 | 降级模式（不调用任何模型）跑通全流程 | 已实现 | 全部测试都在无密钥环境运行 |
 | 版本化 Mock 评估基准（conformant / violating 两个场景） | 已实现 | `pytest tests/test_runner.py` |
-| 生成循环（LangGraph 有界多步 + 注册工具 + 预算） | **开发中**（M1，接在降级模式同一个 seam 之后，见 [ADR-0003](./docs/adr/0003-degraded-mode-shares-the-agent-seam.md)） | — |
+| 生成循环（LangGraph 有界多步 + 注册工具 + 预算） | 已实现（降级模式保留为默认） | `pytest tests/test_agent_loop.py tests/test_agent_integration.py` |
+| Agent 工具注册表（6 个只读工具，与传输无关） | 已实现 | `pytest tests/test_tools.py` |
+| 模型客户端（OpenAI-compatible + 脚本回放两个 adapter） | 已实现 | `pytest tests/test_agent_integration.py` |
+| Agent Step / Tool Call 轨迹与 token 成本 | 已实现 | 同上 |
+| 离线评估与量化指标（判定准确率、假阳/假阴、无依据结论率、回放一致率） | 已实现 | `pytest tests/test_evaluation.py`、`aprobe evaluate` |
 | 诊断循环（失败归因：接口缺陷 / 用例缺陷 / 环境问题 / 无法判定） | **开发中**（M3） | — |
-| Agent Step / Tool Call 轨迹与 token 成本 | **开发中**（M1） | — |
-| 评估集与量化指标（判定准确率、无依据结论率、回放一致率） | **开发中**（M2） | — |
+
+## 实测指标
+
+在仓库自带的基准上实跑（`aprobe evaluate`，conformant 场景回放 2 轮）：
+
+| 指标 | 实测值 |
+| --- | --- |
+| 覆盖用例 | 7 |
+| 判定准确率 | 100.0% |
+| 假阳性 / 假阴性 | 0 / 0 |
+| 无依据结论率 | 0.0% |
+| 证据覆盖率 | 100.0% |
+| 回放一致率（2 轮） | 100.0% |
+| 平均单用例耗时 | 2ms |
+| 规划 token 成本 | 0（本批用例来自降级模式） |
+
+**这些数字不说明什么**，必须一并读：
+
+- 只有 **7 条**标注用例，而且用例文件与基准是一起设计出来的。100% 是预期结果，不是准确率声明。
+- 它证明的是**管线可复现、可度量、能抓住注入的违约**：`violating` 场景把 `total` 改成字符串后，同一条用例被判为失败，指标仍为 100%（标注随之更新）。
+- 用错误的基准跑样例集会被直接拒绝（`基准场景不一致`），因为没声明基准的指标没有意义。
+- 想要有说服力的数字，需要把样例集扩到几十到几百条，并且用例与基准**分别**由不同的人/过程产出。
 
 ## 快速开始
 
@@ -48,8 +72,11 @@ uv pip install -e '.[dev]'
 # 1) 启动版本化评估基准（另一个终端）
 python mock/mock_service.py --port 8080
 
-# 2) 生成用例文件（降级模式，不调用模型）
+# 2) 生成用例文件（默认降级模式，不调用模型）
 aprobe generate --spec examples/petstore.yaml --out cases/generated.yaml
+
+# 或：用有界 Agent 循环生成（需要 APROBE_MODEL_* 环境变量）
+aprobe generate --config aprobe.yaml --mode agent --force
 
 # 3) 离线校验用例文件（不联网、不调用模型）
 aprobe validate --spec examples/petstore.yaml --cases cases/petstore.yaml
@@ -57,7 +84,10 @@ aprobe validate --spec examples/petstore.yaml --cases cases/petstore.yaml
 # 4) 确定性地执行并记录 Trace，导出报告
 aprobe run --config aprobe.yaml --json reports/report.json --junit reports/junit.xml --markdown reports/report.md
 
-# 5) 从 Trace 重新导出报告
+# 5) 在评估基准上回放标注样例集，得到可比较的指标
+aprobe evaluate --config aprobe.yaml --suite eval/petstore-conformant.yaml --repeat 2
+
+# 6) 从 Trace 重新导出报告
 aprobe report --config aprobe.yaml --format json
 ```
 
@@ -72,10 +102,19 @@ aprobe run --config aprobe.yaml --target http://127.0.0.1:8081 --fail-on none
 
 | 命令 | 作用 | 是否联网 | 是否调用模型 |
 |---|---|---|---|
-| `generate` | 从规范生成用例文件 | 否 | 否（M1 起可切换为 Agent 循环） |
+| `generate` | 从规范生成用例文件（`--mode degraded\|agent\|auto`） | 仅 `agent` 模式访问模型端点 | `agent` 模式调用模型 |
 | `validate` | 校验用例文件与规范一致 | 否 | 否 |
 | `run` | 确定性地执行用例并记录 Trace | 是（仅允许范围内的目标） | 否 |
+| `evaluate` | 在评估基准上回放标注样例集并输出指标 | 是（并先确认基准身份） | 否 |
 | `report` | 从 Trace 导出报告 | 否 | 否 |
+
+Agent 模式的环境变量（不配置就一律走降级模式）：
+
+```bash
+APROBE_MODEL_BASE_URL=https://your-endpoint/v1   # OpenAI-compatible
+APROBE_MODEL=your-model
+APROBE_MODEL_API_KEY=...                         # 只从环境变量读，不落库也不进日志
+```
 
 退出码（CI 门禁语义）：
 
@@ -83,7 +122,7 @@ aprobe run --config aprobe.yaml --target http://127.0.0.1:8081 --fail-on none
 |---|---|
 | 0 | 全部通过 |
 | 1 | 至少一条 Assertion 失败 |
-| 2 | 没有失败，但存在「无法判定」（可用 `--fail-on inconclusive` 让它变成 1） |
+| 2 | 没有失败，但存在「无法判定」，或规划循环未完成（预算耗尽 / 模型端点失败） |
 | 3 | 用例文件或配置非法，未发出任何请求 |
 | 4 | 目标被策略拒绝（不在允许范围、非 http/https、或未开启的写操作） |
 

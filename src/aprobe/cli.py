@@ -15,6 +15,7 @@ from .assertions import AssertionEvaluator
 from .cases import dump_case_file, load_case_file, operations_by_id, order_cases, validate_cases
 from .config import DEFAULT_CONFIG_NAME, Config, load_config
 from .errors import AprobeError, CaseFileError, ConfigError, ExitCode, SpecError
+from .evaluation import evaluate_suite, load_suite, render_report
 from .generator import generate_cases
 from .models import (
     APROBE_VERSION,
@@ -28,7 +29,7 @@ from .model_client import from_environment
 from .planner import plan, planner_label
 from .policy import TargetPolicy
 from .report import RENDERERS, ReportMeta, gate_exit_code, summarize
-from .runner import CredentialProvider, TestRunner
+from .runner import CredentialProvider, TestRunner, probe_baseline
 from .specification import load_specification
 from .tools import history_from_runs
 from .trace import TraceStore
@@ -226,6 +227,89 @@ def _write(path: Path, content: str) -> Path:
     return path
 
 
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    config, base, spec_path, cases_path = _load_context(args, require_config=True, require_cases=False)
+    assert config is not None
+
+    suite = load_suite(args.suite)
+    # 样例集里的相对路径与配置里的一致，都以配置文件所在目录为基准
+    if args.spec is None:
+        spec_path = config.resolve(base, suite.spec)
+    if args.cases is None:
+        cases_path = config.resolve(base, suite.cases)
+    if cases_path is None:
+        raise CaseFileError("评估需要用例文件")
+
+    specification = load_specification(spec_path)
+    cases = load_case_file(cases_path)
+    problems = validate_cases(cases, specification)
+    if problems:
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        raise CaseFileError("用例文件非法，拒绝评估")
+
+    policy = TargetPolicy(
+        allow=config.target.allow,
+        allow_write=config.allow_write,
+        timeout_ms=config.limits.timeout_ms,
+        max_response_bytes=config.limits.max_response_bytes,
+        retries=config.limits.retries,
+    )
+    baseline = probe_baseline(policy, config.target.base_url, config.limits.timeout_ms)
+    if baseline.get("scenario") != suite.scenario:
+        raise ConfigError(
+            f"基准场景不一致：样例集声明 {suite.scenario!r}，目标自述 {baseline.get('scenario')!r}。"
+            "指标只在声明过的基准上才有意义，拒绝继续"
+        )
+
+    by_id = operations_by_id(specification)
+    runner = TestRunner(
+        policy=policy,
+        evaluator=AssertionEvaluator(specification),
+        credentials=CredentialProvider(config.auth.scheme, config.auth.env, config.auth.header),
+        environ=dict(os.environ),
+    )
+    store = TraceStore(config.resolve(base, config.trace_db))
+    provenance = RunProvenance(
+        target=config.target.base_url,
+        spec_source=str(spec_path),
+        spec_title=specification.title,
+        spec_version=specification.version,
+        cases_file=str(cases_path),
+        planner=planner_label(cases),
+    )
+    ordered = order_cases(cases)
+
+    def run_once() -> list[TestRun]:
+        produced: list[TestRun] = []
+        for case in ordered:
+            run = runner.execute(case=case, operation=by_id[case.operation_id], provenance=provenance)
+            store.record(run)
+            produced.append(run)
+        return produced
+
+    # 只统计“产出这批用例”的那次规划成本，而不是仓库里所有历史规划
+    case_ids = {case.id for case in ordered}
+    planning_runs = [run for run in store.list_agent_runs() if case_ids & set(run.produced_case_ids)]
+    report = evaluate_suite(
+        suite,
+        run_once=run_once,
+        scenario_version=str(baseline.get("version", "")),
+        repeat=args.repeat,
+        declared_by=planner_label(cases),
+        agent_steps=sum(run.consumed_steps for run in planning_runs),
+        agent_tokens=sum(run.consumed_tokens for run in planning_runs),
+    )
+    print(render_report(report))
+    print(f"Trace 已记录到 {config.resolve(base, config.trace_db)}")
+    if args.json:
+        print(f"评估结果已写入 {_write(Path(args.json), report.to_json())}")
+
+    if report.metrics.matched != report.metrics.total:
+        return ExitCode.ASSERTION_FAILED
+    return ExitCode.OK
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     config, base, spec_path, cases_path = _load_context(args, require_config=True, require_cases=False)
     assert config is not None
@@ -294,6 +378,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--junit", default=None, help="导出 JUnit XML 报告的路径")
     run.add_argument("--markdown", default=None, help="导出 Markdown 报告的路径")
     run.set_defaults(func=cmd_run)
+
+    evaluate = subparsers.add_parser("evaluate", help="在评估基准上回放标注样例集并输出指标")
+    add_common(evaluate)
+    evaluate.add_argument("--suite", required=True, help="评估样例集路径")
+    evaluate.add_argument("--target", default=None, help="覆盖被测基准地址")
+    evaluate.add_argument("--repeat", type=int, default=1, help="回放轮数，用于计算回放一致率")
+    evaluate.add_argument("--json", default=None, help="导出评估结果的路径")
+    evaluate.set_defaults(func=cmd_evaluate)
 
     report = subparsers.add_parser("report", help="从 Trace 导出报告")
     add_common(report)

@@ -1,0 +1,31 @@
+# 评估样例集：conformant 基准。
+#
+# 路径相对于 aprobe.yaml 所在目录（本项目即仓库根）。
+# 这里刻意用低阈值门槛：任何一条与标注不一致就让 evaluate 非零退出。
+version: 1
+name: petstore-conformant
+scenario: conformant
+spec: examples/petstore.yaml
+cases: cases/petstore.yaml
+expectations:
+  - case_id: get-health
+    verdict: passed
+    note: 健康检查的契约与实现一致
+  - case_id: get-pet-by-id
+    verdict: passed
+    note: 嵌套对象结构与字段类型都符合契约
+  - case_id: get-pet-by-id-not-found
+    verdict: passed
+    note: 不存在的 id 返回 404 而不是 200
+  - case_id: get-pet-owner-without-credential
+    verdict: passed
+    note: 未带凭据时契约允许 401
+  - case_id: get-pet-stats
+    verdict: passed
+    note: conformant 场景下 total 是整数
+  - case_id: list-pets
+    verdict: passed
+    note: 列表结构、条数与响应耗时都在范围内
+  - case_id: list-pets-total-matches-items
+    verdict: passed
+    note: 业务规则 total == len(items) 成立

@@ -45,6 +45,10 @@ class MockBehaviour:
         parts = [segment for segment in path.split("/") if segment]
         authorized = "authorization" in {key.lower() for key in headers}
 
+        if method == "GET" and parts == ["__scenario"]:
+            # 评估基准的自述身份：让“量错了基准”变成一条可检的错误，而不是一个静默偏差
+            return MockResponse(200, {"scenario": self.scenario, "version": SCENARIO_VERSION})
+
         if method == "GET" and parts == ["health"]:
             return MockResponse(200, {"status": "ok"})
 
