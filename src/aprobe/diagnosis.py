@@ -167,18 +167,21 @@ def _build_specs(context: DiagnosisContext) -> list[ToolSpec]:
             description="取被诊断运行的完整事实：请求、脱敏后的响应、每条断言的观察与说明。",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             handler=lambda args: context.get_run(),
+            summarize=lambda payload: f"{payload.get('verdict')} / {payload.get('termination_reason')}",
         ),
         ToolSpec(
             name="get_case",
             description="取该用例的定义（请求、参数取值与断言），用于判断是不是用例本身写错了。",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             handler=lambda args: context.get_case(),
+            summarize=lambda payload: str(payload.get("operation_id") or payload.get("error", "ok")),
         ),
         ToolSpec(
             name="list_related_runs",
             description="取同一 Operation 的其他历史运行，用于区分偶发失败与稳定失败。",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             handler=lambda args: context.list_related_runs(),
+            summarize=lambda payload: f"{len(payload.get('runs', []))} 条相关运行",
         ),
         ToolSpec(
             name="submit_diagnosis",
@@ -201,6 +204,9 @@ def _build_specs(context: DiagnosisContext) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             handler=lambda args: context.submit_diagnosis(args),
+            summarize=lambda payload: (
+                f"已提交归因 {payload.get('category')}" if payload.get("accepted") else "归因被拒绝"
+            ),
         ),
     ]
 

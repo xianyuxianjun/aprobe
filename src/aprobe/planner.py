@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from .errors import ConfigError
-from .generator import GenerationResult, NeedsInput, generate_cases
+from .generator import GenerationResult, NeedsInput, generate_cases, needs_input_reason
 from .models import (
     AGENT_PLANNER_VERSION,
     DETERMINISTIC_PLANNER_VERSION,
@@ -200,11 +200,6 @@ def _uncovered(specification: Specification, cases: list[TestCase]) -> list[Need
     for operation in specification.operations:
         if operation.operation_id in covered:
             continue
-        if operation.request_body_required:
-            reason = "需要请求体，未生成用例"
-        elif any(parameter.required for parameter in operation.parameters):
-            reason = "需要路径或查询参数值，未生成用例"
-        else:
-            reason = "尚未为该 Operation 生成用例"
+        reason = needs_input_reason(operation) or "尚未为该 Operation 生成用例"
         uncovered.append(NeedsInput(operation.operation_id, operation.method, operation.path, reason))
     return uncovered

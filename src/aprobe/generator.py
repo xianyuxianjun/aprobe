@@ -38,6 +38,18 @@ def case_id_for(operation: Operation) -> str:
     return slug[:64] or "case"
 
 
+def needs_input_reason(operation: Operation) -> str | None:
+    """为什么无法为这个 Operation 安全地构造请求。这就是这条规则的全部定义。"""
+    missing: list[str] = []
+    if any(parameter.location == "path" and parameter.required for parameter in operation.parameters):
+        missing.append("需要路径参数值")
+    if any(parameter.location == "query" and parameter.required for parameter in operation.parameters):
+        missing.append("需要必需的查询参数")
+    if operation.request_body_required:
+        missing.append("需要请求体")
+    return "、".join(missing) if missing else None
+
+
 def _declared_success(operation: Operation) -> list[str]:
     return sorted(
         (response.status for response in operation.responses if response.status[:1] == "2" and response.status.isdigit()),
@@ -50,16 +62,10 @@ def generate_cases(specification: Specification, origin: str = "deterministic") 
     used_ids: set[str] = set()
 
     for operation in specification.operations:
-        missing: list[str] = []
-        if any(parameter.location == "path" and parameter.required for parameter in operation.parameters):
-            missing.append("需要路径参数值")
-        if any(parameter.location == "query" and parameter.required for parameter in operation.parameters):
-            missing.append("需要必需的查询参数")
-        if operation.request_body_required:
-            missing.append("需要请求体")
-        if missing:
+        reason = needs_input_reason(operation)
+        if reason:
             result.needs_input.append(
-                NeedsInput(operation.operation_id, operation.method, operation.path, "、".join(missing))
+                NeedsInput(operation.operation_id, operation.method, operation.path, reason)
             )
             continue
 

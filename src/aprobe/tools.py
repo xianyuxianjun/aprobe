@@ -23,10 +23,13 @@ from .models import Specification, TestCase, TestRun
 
 @dataclass(frozen=True)
 class ToolSpec:
+    """一个已注册工具。摘要跟着工具走，所以新增工具只需要改一处。"""
+
     name: str
     description: str
     parameters: dict[str, Any]
     handler: Callable[[dict[str, Any]], dict[str, Any]]
+    summarize: Callable[[dict[str, Any]], str] | None = None
 
 
 @dataclass
@@ -125,9 +128,9 @@ class PlanContext:
         return {case.operation_id for case in [*self.existing_cases, *self.submitted]}
 
     def _needs_input(self, operation) -> bool:
-        if operation.request_body_required:
-            return True
-        return any(parameter.required for parameter in operation.parameters)
+        from .generator import needs_input_reason
+
+        return needs_input_reason(operation) is not None
 
     # ---- 唯一的写动作：提交用例（写进内存，由调用方落成文件） ----
 
@@ -199,7 +202,7 @@ class ToolRegistry:
             return ToolResult(
                 ok=False, payload={}, summary=f"{name} 执行失败", error=f"{type(exc).__name__}: {exc}"
             )
-        summary = _summarize(name, payload)
+        summary = (spec.summarize or _generic_summary)(payload)
         # 工具用它自己的返回值宣告失败（error 字段，或 submit_case 的 accepted=false），
         # ok 只在这里决定一次，避免出现“调用成功但结果是被拒绝”这种自相矛盾的轨迹
         if "error" in payload or payload.get("accepted") is False:
@@ -212,21 +215,15 @@ class ToolRegistry:
         return ToolResult(ok=True, payload=payload, summary=summary)
 
 
-def _summarize(name: str, payload: dict[str, Any]) -> str:
-    if name == "list_operations":
-        return f"返回 {payload.get('total', 0)} 个 Operation"
-    if name == "get_operation":
-        return f"{payload.get('method')} {payload.get('path')}"
-    if name == "get_response_schema":
-        return f"{payload.get('operation_id')} 的 {payload.get('status')} 响应结构"
-    if name == "list_existing_cases":
-        return f"已有 {payload.get('total', 0)} 条用例"
-    if name == "get_case_history":
-        return f"{len(payload.get('runs', []))} 条历史运行"
-    if name == "submit_case":
-        if payload.get("accepted"):
-            return f"已接受 {payload.get('case_id')}"
+def _generic_summary(payload: dict[str, Any]) -> str:
+    if payload.get("accepted") is False:
         return "被拒绝：" + "; ".join(str(item) for item in payload.get("problems", []))
+    if payload.get("accepted") is True:
+        return "已接受"
+    if "error" in payload:
+        return str(payload["error"])
+    if "total" in payload:
+        return f"返回 {payload['total']} 项"
     return "ok"
 
 
@@ -244,6 +241,7 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             handler=lambda args: context.list_operations(args.get("tag"), args.get("path_prefix")),
+            summarize=lambda payload: f"返回 {payload.get('total', 0)} 个 Operation",
         ),
         *spec_tool_specs(context),
         ToolSpec(
@@ -251,6 +249,7 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
             description="列出用例文件中已有的用例，用于避免重复并保持风格一致。",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             handler=lambda args: context.list_existing_cases(),
+            summarize=lambda payload: f"已有 {payload.get('total', 0)} 条用例",
         ),
         ToolSpec(
             name="get_case_history",
@@ -262,6 +261,7 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             handler=lambda args: context.get_case_history(args["operation_id"]),
+            summarize=lambda payload: f"{len(payload.get('runs', []))} 条历史运行",
         ),
         ToolSpec(
             name="submit_case",
@@ -304,6 +304,9 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             handler=lambda args: context.submit_case({**args, "origin": "agent"}),
+            summarize=lambda payload: (
+                f"已接受 {payload.get('case_id')}" if payload.get("accepted") else "被拒绝"
+            ),
         ),
     ]
 
@@ -364,6 +367,7 @@ def spec_tool_specs(queries: Any) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             handler=lambda args: queries.get_operation(args["operation_id"]),
+            summarize=lambda payload: f"{payload.get('method')} {payload.get('path')}",
         ),
         ToolSpec(
             name="get_response_schema",
@@ -378,5 +382,6 @@ def spec_tool_specs(queries: Any) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             handler=lambda args: queries.get_response_schema(args["operation_id"], args["status"]),
+            summarize=lambda payload: f"{payload.get('operation_id')} 的 {payload.get('status')} 响应结构",
         ),
     ]
