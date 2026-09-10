@@ -40,6 +40,8 @@ ALLOWED_DIAGNOSIS_TOOLS = {
 }
 
 
+pytest.importorskip("langgraph.graph", reason="这些用例需要 [agent] 可选依赖")
+
 def failing_run() -> "TestRun":  # noqa: F821
     from aprobe.models import AssertionResult, TerminationReason, TestRun, Verdict, RunProvenance
 

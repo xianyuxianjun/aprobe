@@ -233,9 +233,19 @@ CONTEXT.md           术语表与领域边界
 **改动前先读 [AGENTS.md](./AGENTS.md)**：它写了 seam 在哪、哪些模块必须保持深、禁止的模式，以及当前三笔已知的债。
 
 ```bash
-uv pip install -e '.[dev]'
+uv pip install -e '.[dev]'          # 核心：不需要模型，降级模式完整可用
+uv pip install -e '.[dev,agent]'    # 加上 Agent 循环（LangGraph）
 .venv/bin/pytest
 ```
+
+ADR-0003 说"降级模式不是简化版"，这句话是可执行的：
+
+| 安装方式 | `pytest` 实测 |
+| --- | --- |
+| 只装 `[dev]` | **125 passed, 5 skipped**（跳过的是必须用循环的用例，不是失败） |
+| `[dev,agent]` | **157 passed** |
+
+CI 两个都跑：`degraded-only` 这个 job 只装核心依赖，用来保证这条性质不会悄悄退化。
 
 Agent 循环所需的可选依赖单独声明，M0 不依赖它们：
 

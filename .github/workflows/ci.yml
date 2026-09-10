@@ -5,6 +5,19 @@ on:
   pull_request:
 
 jobs:
+  # ADR-0003 的可执行形式：没有模型、也没有可选依赖时，降级路径必须完整可用
+  degraded-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: 只装核心依赖
+        run: |
+          uv venv --python 3.12
+          uv pip install -e '.[dev]'
+      - name: 降级路径必须全绿（需要循环的用例应被跳过而不是失败）
+        run: .venv/bin/pytest
+
   verify:
     runs-on: ubuntu-latest
     steps:

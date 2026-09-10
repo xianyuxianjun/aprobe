@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from aprobe.planner import GENERATE_PROMPT_VERSION, GENERATE_SYSTEM_PROMPT, build_generation_loop
 from aprobe.model_client import ModelError, ModelReply, ModelToolCall, ScriptedModelClient
 from aprobe.models import AgentBudget, TerminationReason
 from aprobe.tools import PlanContext, ToolRegistry
 
+
+pytest.importorskip("langgraph.graph", reason="这些用例需要 [agent] 可选依赖")
 
 def reply(*calls: tuple[str, dict], text: str = "", input_tokens: int = 100, output_tokens: int = 20) -> ModelReply:
     return ModelReply(

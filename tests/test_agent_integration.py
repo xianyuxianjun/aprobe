@@ -21,6 +21,8 @@ from aprobe.specification import load_specification
 from aprobe.trace import TraceStore
 
 
+pytest.importorskip("langgraph.graph", reason="这些用例需要 [agent] 可选依赖")
+
 def tool_call(name: str, arguments: dict, call_id: str = "call_1") -> dict:
     return {"id": call_id, "name": name, "arguments": arguments}
 

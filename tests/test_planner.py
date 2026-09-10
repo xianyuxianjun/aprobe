@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from aprobe.errors import ConfigError
@@ -14,6 +16,16 @@ from aprobe.models import (
 )
 from aprobe.model_client import ModelReply, ModelToolCall, ScriptedModelClient
 from aprobe.planner import plan, planner_label
+
+def _has_langgraph() -> bool:
+    # find_spec 对带点的名字会先导入父包，所以缺依赖时会抛而不是返回 None
+    try:
+        return importlib.util.find_spec("langgraph.graph") is not None
+    except ModuleNotFoundError:
+        return False
+
+
+requires_agent = pytest.mark.skipif(not _has_langgraph(), reason="需要 [agent] 可选依赖")
 
 
 def submit(case_id: str, operation_id: str, path: str) -> ModelReply:
@@ -71,6 +83,7 @@ def test_unknown_mode_is_rejected(specification) -> None:
         plan(specification, mode="telepathy")
 
 
+@requires_agent
 def test_agent_mode_produces_the_same_artifact_shape(specification) -> None:
     client = ScriptedModelClient([submit("list-pets-by-agent", "listPets", "/pets"), ModelReply(text="done")])
     result = plan(specification, mode="agent", model=client)
@@ -108,6 +121,7 @@ def test_human_cases_are_kept_alongside_generated_ones(specification) -> None:
     assert any("保留已有版本" in note for note in result.agent_run.notes)
 
 
+@requires_agent
 def test_agent_mode_passes_budget_into_the_trace(specification) -> None:
     client = ScriptedModelClient([ModelReply(text="nothing to do")])
     result = plan(specification, mode="agent", model=client, budget=AgentBudget(max_steps=3, max_tokens=99))
