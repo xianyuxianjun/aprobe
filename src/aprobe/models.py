@@ -1,7 +1,7 @@
 """aprobe 的领域模型。
 
 这里只放领域概念本身，不放行为：判定逻辑在 assertions，网络在 runner，
-策略在 policy，持久化在 trace。术语以 CONTEXT.md 为准。
+策略在 policy，持久化在 trace。术语以本地开发文档 CONTEXT.md 为准（该文件不随仓库发布）。
 """
 
 from __future__ import annotations

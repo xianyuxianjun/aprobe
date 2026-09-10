@@ -10,3 +10,7 @@ dist/
 .aprobe/
 *.db
 reports/
+
+# 本地开发文档：保留在本地供开发使用，不随仓库发布
+AGENTS.md
+CONTEXT.md
