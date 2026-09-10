@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .assertions import AssertionEvaluator
 from .cases import dump_case_file, load_case_file, operations_by_id, order_cases, validate_cases
-from .config import DEFAULT_CONFIG_NAME, Config, load_config
+from .config import DEFAULT_CONFIG_NAME, Config, effective_environment, load_config
 from .errors import AprobeError, CaseFileError, ConfigError, ExitCode, SpecError
 from .evaluation import compare, evaluate_suite, gate, load_suite, render_comparison, render_report
 from .models import (
@@ -35,6 +35,11 @@ from .runner import CredentialProvider, TestRunner, probe_baseline
 from .specification import load_specification
 from .tools import history_from_runs
 from .trace import TraceStore
+
+
+def credentials_source() -> dict[str, str]:
+    """凭据与模型配置的唯一来源：真实环境优先，其次当前目录的 .env。"""
+    return effective_environment(Path.cwd(), os.environ)
 
 
 def _load_context(
@@ -92,7 +97,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         store = TraceStore(config.resolve(base, config.trace_db))
         history = history_from_runs(store.list_runs())
 
-    model = from_environment(dict(os.environ)) if args.mode in ("agent", "auto") else None
+    model = from_environment(credentials_source()) if args.mode in ("agent", "auto") else None
     budget = AgentBudget(
         max_steps=args.max_steps,
         max_tokens=args.max_tokens,
@@ -188,7 +193,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         policy=policy,
         evaluator=AssertionEvaluator(specification),
         credentials=CredentialProvider(config.auth.scheme, config.auth.env, config.auth.header),
-        environ=dict(os.environ),
+        environ=credentials_source(),
     )
     store = TraceStore(config.resolve(base, config.trace_db))
     provenance = RunProvenance(
@@ -262,7 +267,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         policy=policy,
         evaluator=AssertionEvaluator(specification),
         credentials=CredentialProvider(config.auth.scheme, config.auth.env, config.auth.header),
-        environ=dict(os.environ),
+        environ=credentials_source(),
     )
     store = TraceStore(config.resolve(base, config.trace_db))
     by_id = operations_by_id(specification)
@@ -336,7 +341,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     config, base, spec_path, cases_path = _load_context(args, require_config=True, require_cases=True)
     assert config is not None and cases_path is not None
 
-    model = from_environment(dict(os.environ))
+    model = from_environment(credentials_source())
     if model is None:
         raise ConfigError(
             "诊断需要模型端点（设置 APROBE_MODEL_BASE_URL 与 APROBE_MODEL）。"

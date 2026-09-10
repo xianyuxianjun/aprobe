@@ -185,13 +185,24 @@ aprobe run --config aprobe.yaml --target http://127.0.0.1:8081 --fail-on none
 
 需要模型的两处，只有这里：`generate --mode agent` 与 `diagnose`。`run`、`validate`、`evaluate`、`report` **永远不调模型**。
 
-Agent 模式的环境变量（不配置就一律走降级模式）：
+需要模型的功能只有两处：`generate --mode agent` 与 `diagnose`。其余命令永不调模型。
+
+凭据与模型配置的来源，按优先级：
+
+1. 真实环境变量（`export ...` 或 `FOO=bar aprobe ...`）
+2. 当前工作目录下的 `.env`（已被 `.gitignore` 忽略）
+
+```bash
+cp .env.example .env    # 然后填真值；.env 不会进仓库
+```
 
 ```bash
 APROBE_MODEL_BASE_URL=https://your-endpoint/v1   # OpenAI-compatible
 APROBE_MODEL=your-model
-APROBE_MODEL_API_KEY=...                         # 只从环境变量读，不落库也不进日志
+APROBE_MODEL_API_KEY=...                         # 只从上面的来源读，不落库也不进日志
 ```
+
+模型必须支持 tool calling（function calling），否则循环会以 `planner_failed`（退出码 2）明确终止，而不是静默产出无用的用例。
 
 退出码（CI 门禁语义）：
 
@@ -250,6 +261,7 @@ cases/
   edgecases-agent.yaml     Agent 补齐之后的快照（对比的右侧）
 scripts/
   evaluate_all.sh    在全部基准上回放全部样例集（CI 用的同一条命令）
+.env.example         凭据与模型配置的模板（.env 被忽略，不进仓库）
 .github/workflows/   CI：pytest + ruff -F + 评估门禁
 cases/petstore.yaml  示例用例文件（含人工补写的路径参数用例）
 docs/adr/            架构决策记录（0001 审批载体、0002 权威轨迹、0003 模式共用同一条流程）

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,26 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(scope="session")
 def repository_root() -> Path:
     return ROOT
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _guard_repository_fixtures():
+    """测试不得改写仓库里被跟踪的样例文件。
+
+    agent 模式会 --force 回写用例文件，而用例文件与规范都是仓库资产：
+    测试里只要顺手指向仓库路径，就会在无人察觉的情况下污染版本库。这条守卫让
+    那种错误在会话结束时报错，而不是等到 git status 才发现。
+    """
+
+    def checksums() -> dict[Path, str]:
+        targets = sorted(ROOT.glob("cases/*.yaml")) + sorted(ROOT.glob("examples/*.yaml"))
+        return {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in targets}
+
+    before = checksums()
+    yield
+    after = checksums()
+    changed = sorted(str(path.relative_to(ROOT)) for path in before if before[path] != after.get(path))
+    assert not changed, f"测试改写了仓库里的样例文件：{changed}"
 
 
 @pytest.fixture(scope="session")
