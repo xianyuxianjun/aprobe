@@ -51,8 +51,17 @@ def needs_input_reason(operation: Operation) -> str | None:
 
 
 def _declared_success(operation: Operation) -> list[str]:
+    """契约里声明为非错误的结果码。
+
+    3xx 也算：aprobe 禁止跟随重定向，所以重定向本身就是一个可断言的结果，
+    而不是一次失败。真正属于错误的是 4xx / 5xx。
+    """
     return sorted(
-        (response.status for response in operation.responses if response.status[:1] == "2" and response.status.isdigit()),
+        (
+            response.status
+            for response in operation.responses
+            if response.status[:1] in ("2", "3") and response.status.isdigit()
+        ),
         key=int,
     )
 
@@ -72,7 +81,12 @@ def generate_cases(specification: Specification, origin: str = "deterministic") 
         success_codes = _declared_success(operation)
         if not success_codes:
             result.needs_input.append(
-                NeedsInput(operation.operation_id, operation.method, operation.path, "未声明任何 2xx 响应，无法写出断言")
+                NeedsInput(
+                    operation.operation_id,
+                    operation.method,
+                    operation.path,
+                    "未声明任何 2xx/3xx 响应，无法写出断言",
+                )
             )
             continue
 

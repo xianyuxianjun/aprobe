@@ -1,0 +1,35 @@
+# 评估样例集：契约边界基准。
+#
+# 标注的来源是"我注入了什么偏差"，不是"aprobe 说了什么"——这是刻意的：
+# 期望值必须来自独立的真相来源，否则指标只是自证。
+# 路径相对 aprobe.yaml 所在目录（本项目即仓库根）。
+version: 1
+name: edgecases-conformant
+scenario: conformant
+spec: examples/edgecases.yaml
+cases: cases/edgecases.yaml
+expectations:
+- case_id: get-broken-json
+  verdict: passed
+- case_id: get-empty-list
+  verdict: passed
+- case_id: get-enum-field
+  verdict: passed
+- case_id: get-nested-object
+  verdict: passed
+- case_id: get-no-content
+  verdict: passed
+- case_id: get-number-shapes
+  verdict: passed
+- case_id: get-pagination
+  verdict: passed
+- case_id: get-redirect
+  verdict: passed
+- case_id: get-required-fields
+  verdict: passed
+- case_id: edge-pagination-total-matches-items
+  verdict: passed
+- case_id: edge-empty-total-matches-items
+  verdict: passed
+- case_id: edge-redirect-is-not-followed
+  verdict: passed

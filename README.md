@@ -44,25 +44,47 @@
 
 ## 实测指标
 
-在仓库自带的基准上实跑（`aprobe evaluate`，conformant 场景回放 2 轮）：
+四个样例集，在仓库自带的两个基准上实跑（`bash scripts/evaluate_all.sh`，回放 2 轮）：
 
-| 指标 | 实测值 |
+| 样例集 | 用例 | 判定准确率 | 假阴性 | 无法判定 | 回放一致率 |
+| --- | --- | --- | --- | --- | --- |
+| petstore-conformant | 7 | 100.0% | 0 | 0 | 100.0% |
+| petstore-violating | 7 | 100.0% | 0 | 0 | 100.0% |
+| edgecases-conformant | 12 | 100.0% | 0 | 0 | 100.0% |
+| edgecases-violating | 12 | 100.0% | 0 | 1 | 100.0% |
+
+标注的来源是"我在基准里注入了什么偏差"，而不是"aprobe 说了什么"——期望值必须来自独立的真相来源，否则指标只是自证。
+
+`edgecases-violating` 里**每个接口各注入一种不同种类**的偏差，按用例来源分组之后是这张表：
+
+| 用例来源 | 抓住的偏差 |
 | --- | --- |
-| 覆盖用例 | 7 |
-| 判定准确率 | 100.0% |
-| 假阳性 / 假阴性 | 0 / 0 |
-| 无依据结论率 | 0.0% |
-| 证据覆盖率 | 100.0% |
-| 回放一致率（2 轮） | 100.0% |
-| 平均单用例耗时 | 2ms |
-| 规划 token 成本 | 0（本批用例来自降级模式） |
+| 确定性生成（9 条） | 6 类：缺必填且多出 `additionalProperties` 禁止的字段、枚举越界、嵌套类型错、数值形状错、204 被返回 200、302 被返回 301 |
+| 人工补写（3 条） | 2 条业务规则（`total` 必须等于 `items` 条数，含空列表）＋ 1 条重定向语义 |
+| 两者都只能给出 | 1 条「无法判定」：声明 `application/json` 但响应不是 JSON |
+
+**这张表才是这个项目想说的事**：schema 驱动的自动生成能覆盖结构与状态码，但**业务规则类违约只有会读语义的用例设计者能发现**——这就是 Agent（或人）在这条流程里不可替代的位置，也是 M1 那套工具集存在的理由。
 
 **这些数字不说明什么**，必须一并读：
 
-- 只有 **7 条**标注用例，而且用例文件与基准是一起设计出来的。100% 是预期结果，不是准确率声明。
-- 它证明的是**管线可复现、可度量、能抓住注入的违约**：`violating` 场景把 `total` 改成字符串后，同一条用例被判为失败，指标仍为 100%（标注随之更新）。
-- 用错误的基准跑样例集会被直接拒绝（`基准场景不一致`），因为没声明基准的指标没有意义。
-- 想要有说服力的数字，需要把样例集扩到几十到几百条，并且用例与基准**分别**由不同的人/过程产出。
+- 38 条标注、两个自建基准，而且用例、基准、标注出自同一个作者与同一轮工作。100% 是预期结果，不是准确率声明。
+- 它证明的是**管线可复现、可度量、能抓住注入的每一类偏差，且漏报会被单独拦下**。
+- 想要有说服力的数字，需要基准由第三方提供、标注由另一个人写。
+
+## 持续集成
+
+`.github/workflows/ci.yml` 跑三件事：`pytest`、`ruff --select F`（只看未定义名与未使用导入/变量，不引入风格门禁）、以及在全部基准上回放全部样例集。
+
+门禁规则的实体是 `evaluation.gate()`，可以直接测：
+
+- **假阴性单独构成失败**，不参与准确率平均——漏报违约比误报危险得多。
+- 指定 `--min-accuracy` 就按门槛判；不指定时任何不一致都算失败（更严格）。
+
+本地跑同一条命令即可：
+
+```bash
+bash scripts/evaluate_all.sh
+```
 
 ## 快速开始
 
@@ -88,7 +110,10 @@ aprobe run --config aprobe.yaml --json reports/report.json --junit reports/junit
 # 5) 在评估基准上回放标注样例集，得到可比较的指标
 aprobe evaluate --config aprobe.yaml --suite eval/petstore-conformant.yaml --repeat 2
 
-# 6) 从 Trace 重新导出报告（含失败归因段落）
+# 6) 一次性在全部基准上回放全部四个样例集（CI 用的同一条命令）
+bash scripts/evaluate_all.sh
+
+# 7) 从 Trace 重新导出报告（含失败归因段落）
 aprobe report --config aprobe.yaml --format json
 ```
 
@@ -96,6 +121,7 @@ aprobe report --config aprobe.yaml --format json
 
 ```bash
 python mock/mock_service.py --scenario violating --port 8081
+python mock/edge_service.py --scenario violating --port 8082     # 第二个基准：契约边界
 python mock/model_server.py --script eval/diagnose-demo.json --port 8090
 aprobe run --config aprobe.yaml --target http://127.0.0.1:8081 --fail-on none
 APROBE_MODEL_BASE_URL=http://127.0.0.1:8090 APROBE_MODEL=mock-model aprobe diagnose --config aprobe.yaml
@@ -108,6 +134,7 @@ aprobe report --config aprobe.yaml --format md
 
 ```bash
 python mock/mock_service.py --scenario violating --port 8081
+python mock/edge_service.py --scenario violating --port 8082     # 第二个基准：契约边界
 aprobe run --config aprobe.yaml --target http://127.0.0.1:8081 --fail-on none
 ```
 
@@ -177,9 +204,14 @@ src/aprobe/
   report.py          Markdown / JSON / JUnit 导出与 CI 门禁退出码
   cli.py             命令行与退出码
 mock/
-  mock_service.py    版本化评估基准（被测目标）
+  http_kit.py        两个基准共用的 HTTP 管道（机制与意图分开）
+  mock_service.py    评估基准 #1：Petstore（被测目标）
+  edge_service.py    评估基准 #2：契约边界，每接口一种偏差
   model_server.py    模型端点替身（不是被测目标）
-eval/                评估样例集与演示脚本
+eval/                四个评估样例集与归因演示脚本
+scripts/
+  evaluate_all.sh    在全部基准上回放全部样例集（CI 用的同一条命令）
+.github/workflows/   CI：pytest + ruff -F + 评估门禁
 cases/petstore.yaml  示例用例文件（含人工补写的路径参数用例）
 docs/adr/            架构决策记录（0001 审批载体、0002 权威轨迹、0003 模式共用同一条流程）
 CONTEXT.md           术语表与领域边界
@@ -193,7 +225,8 @@ CONTEXT.md           术语表与领域边界
 - 嵌套 `$ref` 仅打包 `#/components/schemas/*`；指向其他位置的引用会导致「无法判定」，而不是静默通过。
 - 请求体只支持 JSON；表单、multipart、二进制上传暂不支持。
 - 尚无语义化的失败归因（诊断循环在 M3），报告只列出断言层面的观察事实。
-- 尚无 Agent 循环与预算，因此也还没有 token 成本与步数指标。
+- 响应声明的 media type 是 JSON 但实际不是 JSON 时，契约无法校验，结论是「无法判定」而不是「失败」。这是刻意的边界（无法求值只能是无法判定），代价是这类违约需要人再看一眼。
+- token 成本只在真的接了模型端点之后才有数；仓库里的数字是 `mock/model_server.py` 换来的，不代表真实成本。
 
 ## 开发
 

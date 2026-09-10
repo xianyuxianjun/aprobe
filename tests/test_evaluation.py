@@ -14,12 +14,14 @@ from pathlib import Path
 from conftest import write_config
 
 from aprobe.cli import main
-from aprobe.evaluation import EvalSuite, Expectation, evaluate_suite, load_suite, render_report
+from aprobe.evaluation import EvalSuite, Expectation, evaluate_suite, gate, load_suite, render_report
 from aprobe.models import Observation, TerminationReason, TestRun, Verdict
 
 REPO = Path(__file__).resolve().parents[1]
 CONFORMANT_SUITE = REPO / "eval" / "petstore-conformant.yaml"
 VIOLATING_SUITE = REPO / "eval" / "petstore-violating.yaml"
+EDGE_CONFORMANT_SUITE = REPO / "eval" / "edgecases-conformant.yaml"
+EDGE_VIOLATING_SUITE = REPO / "eval" / "edgecases-violating.yaml"
 
 
 def run(case_id: str, verdict: Verdict, *, evidence: int = 1, duration_ms: int = 10) -> TestRun:
@@ -236,3 +238,97 @@ def test_evaluate_exports_machine_readable_result(tmp_path, spec_path, cases_pat
     assert payload["metrics"]["accuracy"] == 1.0
     assert payload["scenario_version"] == "1.0.0"
     assert len(payload["outcomes"]) == 7
+
+
+def test_all_four_bundled_suites_load() -> None:
+    suites = {
+        path.name: load_suite(path)
+        for path in (CONFORMANT_SUITE, VIOLATING_SUITE, EDGE_CONFORMANT_SUITE, EDGE_VIOLATING_SUITE)
+    }
+    assert suites["petstore-conformant.yaml"].scenario == "conformant"
+    assert suites["petstore-violating.yaml"].scenario == "violating"
+    assert suites["edgecases-conformant.yaml"].scenario == "conformant"
+    assert suites["edgecases-violating.yaml"].scenario == "violating"
+    assert len(suites["edgecases-violating.yaml"].expectations) == 12
+
+
+def test_edge_suites_differ_in_more_than_one_place() -> None:
+    """第二个基准的意义就在这里：多种偏差各自独立地反映在标注差异上。"""
+    conformant = {item.case_id: item.verdict for item in load_suite(EDGE_CONFORMANT_SUITE).expectations}
+    violating = {item.case_id: item.verdict for item in load_suite(EDGE_VIOLATING_SUITE).expectations}
+    diff = sorted(case_id for case_id in conformant if conformant[case_id] is not violating[case_id])
+    assert len(diff) == 10
+    assert violating["get-broken-json"] is Verdict.INCONCLUSIVE
+
+
+def test_gate_always_fails_on_a_false_negative() -> None:
+    """漏报违约是最坏的错误：即使准确率很高，也不能被平均掉。"""
+    report = evaluate_suite(
+        suite(("a", Verdict.PASSED), ("b", Verdict.FAILED)),
+        run_once=lambda: [run("a", Verdict.PASSED), run("b", Verdict.PASSED)],
+    )
+    code, reason = gate(report)
+    assert code == 1
+    assert "漏报" in reason
+
+
+def test_gate_threshold_tolerates_mismatches() -> None:
+    report = evaluate_suite(
+        suite(("a", Verdict.PASSED), ("b", Verdict.PASSED)),
+        run_once=lambda: [run("a", Verdict.PASSED), run("b", Verdict.FAILED)],
+    )
+    assert gate(report)[0] == 1  # 缺省严格模式：任何不一致都失败
+    assert gate(report, 0.4)[0] == 0  # 50% 达到 40% 门槛
+    assert gate(report, 0.6)[0] == 1  # 50% 未达 60% 门槛
+
+
+def test_gate_passes_a_perfect_report() -> None:
+    report = evaluate_suite(suite(("a", Verdict.PASSED)), run_once=lambda: [run("a", Verdict.PASSED)])
+    assert gate(report) == (0, "")
+
+
+def test_edge_baseline_conformant_is_clean(tmp_path, edge_spec_path, edge_cases_path, edge_conformant, capsys) -> None:
+    config = write_config(tmp_path, base_url=edge_conformant.base_url, spec=edge_spec_path, cases=edge_cases_path)
+    code = main(
+        [
+            "evaluate",
+            "--config",
+            str(config),
+            "--suite",
+            str(EDGE_CONFORMANT_SUITE),
+            "--spec",
+            str(edge_spec_path),
+            "--cases",
+            str(edge_cases_path),
+            "--repeat",
+            "2",
+        ]
+    )
+    output = capsys.readouterr().out
+    assert code == 0, output
+    assert "覆盖用例 | 12" in output
+    assert "判定准确率 | 100.0%" in output
+
+
+def test_edge_baseline_violating_catches_every_injected_deviation(
+    tmp_path, edge_spec_path, edge_cases_path, edge_violating, capsys
+) -> None:
+    config = write_config(tmp_path, base_url=edge_violating.base_url, spec=edge_spec_path, cases=edge_cases_path)
+    code = main(
+        [
+            "evaluate",
+            "--config",
+            str(config),
+            "--suite",
+            str(EDGE_VIOLATING_SUITE),
+            "--spec",
+            str(edge_spec_path),
+            "--cases",
+            str(edge_cases_path),
+        ]
+    )
+    output = capsys.readouterr().out
+    assert code == 0, output
+    assert "判定准确率 | 100.0%" in output
+    assert "假阴性（应为失败，实际通过） | 0" in output
+    assert "无法判定 | 1" in output  # 响应不是 JSON：无法校验，只能说无法判定

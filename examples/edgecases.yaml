@@ -1,0 +1,164 @@
+openapi: 3.0.3
+info:
+  title: Contract Edge Cases
+  version: 2.0.0
+  description: 第二个评估基准：专门探测契约边界（必填、枚举、嵌套、数值形状、分页规则、204、重定向、非 JSON）。
+paths:
+  /contracts/required:
+    get:
+      operationId: getRequiredFields
+      summary: 必填字段与 additionalProperties
+      responses:
+        "200":
+          description: 完整对象
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrictObject"
+
+  /contracts/enum:
+    get:
+      operationId: getEnumField
+      summary: 枚举取值
+      responses:
+        "200":
+          description: 枚举字段
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusObject"
+
+  /contracts/nested:
+    get:
+      operationId: getNestedObject
+      summary: 嵌套对象与数组元素类型
+      responses:
+        "200":
+          description: 嵌套结构
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NestedObject"
+
+  /contracts/numbers:
+    get:
+      operationId: getNumberShapes
+      summary: number / integer / boolean 的形状
+      responses:
+        "200":
+          description: 数值形状
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NumberShapes"
+
+  /contracts/pagination:
+    get:
+      operationId: getPagination
+      summary: 分页结构（业务规则：total 必须等于 items 条数）
+      responses:
+        "200":
+          description: 分页结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+
+  /contracts/empty:
+    get:
+      operationId: getEmptyList
+      summary: 空列表（item 条数为 0）
+      responses:
+        "200":
+          description: 空结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+
+  /contracts/no-content:
+    get:
+      operationId: getNoContent
+      summary: 204：不声明任何响应体
+      responses:
+        "204":
+          description: 无内容
+
+  /contracts/redirect:
+    get:
+      operationId: getRedirect
+      summary: 302：aprobe 禁止跟随重定向，所以重定向本身是可断言的结果
+      responses:
+        "302":
+          description: 重定向
+
+  /contracts/broken-json:
+    get:
+      operationId: getBrokenJson
+      summary: 声明为 application/json，用来观察"响应不是 JSON"时的结论
+      responses:
+        "200":
+          description: JSON 对象
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusObject"
+
+components:
+  schemas:
+    StrictObject:
+      type: object
+      required: [id, name]
+      additionalProperties: false
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          minLength: 1
+
+    StatusObject:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [active, archived]
+
+    NestedObject:
+      type: object
+      required: [owner]
+      properties:
+        owner:
+          type: object
+          required: [email, tags]
+          properties:
+            email:
+              type: string
+            tags:
+              type: array
+              items:
+                type: string
+
+    NumberShapes:
+      type: object
+      required: [ratio, count, flag]
+      properties:
+        ratio:
+          type: number
+        count:
+          type: integer
+        flag:
+          type: boolean
+
+    Page:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+        total:
+          type: integer
+          minimum: 0

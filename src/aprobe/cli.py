@@ -16,7 +16,7 @@ from .assertions import AssertionEvaluator
 from .cases import dump_case_file, load_case_file, operations_by_id, order_cases, validate_cases
 from .config import DEFAULT_CONFIG_NAME, Config, load_config
 from .errors import AprobeError, CaseFileError, ConfigError, ExitCode, SpecError
-from .evaluation import evaluate_suite, load_suite, render_report
+from .evaluation import evaluate_suite, gate, load_suite, render_report
 from .models import (
     APROBE_VERSION,
     AgentBudget,
@@ -307,9 +307,10 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     if args.json:
         print(f"评估结果已写入 {_write(Path(args.json), report.to_json())}")
 
-    if report.metrics.matched != report.metrics.total:
-        return ExitCode.ASSERTION_FAILED
-    return ExitCode.OK
+    code, reason = gate(report, args.min_accuracy)
+    if reason:
+        print(f"aprobe: {reason}", file=sys.stderr)
+    return code
 
 
 def cmd_diagnose(args: argparse.Namespace) -> int:
@@ -455,6 +456,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--suite", required=True, help="评估样例集路径")
     evaluate.add_argument("--target", default=None, help="覆盖被测基准地址")
     evaluate.add_argument("--repeat", type=int, default=1, help="回放轮数，用于计算回放一致率")
+    evaluate.add_argument(
+        "--min-accuracy",
+        type=float,
+        default=None,
+        help="准确率门槛；缺省时任何不一致都算失败（更严格）",
+    )
     evaluate.add_argument("--json", default=None, help="导出评估结果的路径")
     evaluate.set_defaults(func=cmd_evaluate)
 

@@ -1,0 +1,47 @@
+# 评估样例集：契约边界基准。
+#
+# 标注的来源是"我注入了什么偏差"，不是"aprobe 说了什么"——这是刻意的：
+# 期望值必须来自独立的真相来源，否则指标只是自证。
+# 路径相对 aprobe.yaml 所在目录（本项目即仓库根）。
+version: 1
+name: edgecases-violating
+scenario: violating
+spec: examples/edgecases.yaml
+cases: cases/edgecases.yaml
+expectations:
+- case_id: get-broken-json
+  verdict: inconclusive
+  note: 声明 application/json 但响应不是 JSON：无法校验，只能无法判定
+- case_id: get-empty-list
+  verdict: passed
+  note: 该接口在 violating 场景下未注入偏差
+- case_id: get-enum-field
+  verdict: failed
+  note: 枚举越界：status=unknown
+- case_id: get-nested-object
+  verdict: failed
+  note: 嵌套类型错：email 是数字、tags 含数字
+- case_id: get-no-content
+  verdict: failed
+  note: 契约 204，实现返回 200 且带 body
+- case_id: get-number-shapes
+  verdict: failed
+  note: 数值形状错：ratio/count/flag 类型全错
+- case_id: get-pagination
+  verdict: passed
+  note: 该接口在 violating 场景下未注入偏差
+- case_id: get-redirect
+  verdict: failed
+  note: 契约 302，实现返回 301
+- case_id: get-required-fields
+  verdict: failed
+  note: 缺必填 name，且多出 additionalProperties 禁止的字段
+- case_id: edge-pagination-total-matches-items
+  verdict: failed
+  note: 结构合法但 total 与 items 条数不一致
+- case_id: edge-empty-total-matches-items
+  verdict: failed
+  note: 空列表接口返回了 1 条却声称 total=0
+- case_id: edge-redirect-is-not-followed
+  verdict: failed
+  note: 同上：状态码与 Location 都不符合契约

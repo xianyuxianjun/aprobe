@@ -40,6 +40,36 @@ def violating() -> MockService:
     service.stop()
 
 
+@pytest.fixture(scope="session")
+def edge_spec_path() -> Path:
+    return ROOT / "examples" / "edgecases.yaml"
+
+
+@pytest.fixture(scope="session")
+def edge_cases_path() -> Path:
+    return ROOT / "cases" / "edgecases.yaml"
+
+
+def _edge_service(scenario: str):
+    from edge_service import MockService as EdgeService
+
+    return EdgeService(scenario).start()
+
+
+@pytest.fixture(scope="session")
+def edge_conformant():
+    service = _edge_service("conformant")
+    yield service
+    service.stop()
+
+
+@pytest.fixture(scope="session")
+def edge_violating():
+    service = _edge_service("violating")
+    yield service
+    service.stop()
+
+
 @pytest.fixture
 def specification(spec_path: Path):
     return load_specification(spec_path)

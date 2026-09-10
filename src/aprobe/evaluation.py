@@ -17,7 +17,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .errors import ConfigError
+from .errors import ConfigError, ExitCode
 from .models import TestRun, Verdict
 
 SUITE_VERSION = 1
@@ -201,6 +201,30 @@ def _consistency(rounds: list[dict[str, TestRun]]) -> float:
         1 for case_id in case_ids if len({round_[case_id].verdict for round_ in rounds if case_id in round_}) == 1
     )
     return agreeing / len(case_ids)
+
+
+def gate(report: EvaluationReport, min_accuracy: float | None = None) -> tuple[ExitCode, str]:
+    """评估的 CI 门禁规则。
+
+    漏报比误报危险得多：**假阴性单独构成失败，不参与准确率平均**。
+    指定了门槛就按门槛判，否则任何不一致都算失败（更严格）。
+    """
+    metrics = report.metrics
+    if metrics.false_negatives > 0:
+        return (
+            ExitCode.ASSERTION_FAILED,
+            f"有 {metrics.false_negatives} 条违约被漏报（标注为失败、实际通过）",
+        )
+    if min_accuracy is not None:
+        if metrics.accuracy < min_accuracy:
+            return (
+                ExitCode.ASSERTION_FAILED,
+                f"判定准确率 {metrics.accuracy:.1%} 低于门槛 {min_accuracy:.1%}",
+            )
+        return ExitCode.OK, ""
+    if metrics.matched != metrics.total:
+        return ExitCode.ASSERTION_FAILED, f"{metrics.total - metrics.matched} 条与标注不一致"
+    return ExitCode.OK, ""
 
 
 def render_report(report: EvaluationReport) -> str:
