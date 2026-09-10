@@ -6,8 +6,39 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
+
+#: 用例不得设置的请求头。它们由配置注入——用例设置它们等于伪造身份或改写路由。
+FORBIDDEN_HEADERS = frozenset(
+    {"authorization", "cookie", "host", "content-length", "transfer-encoding", "connection"}
+)
+
+MAX_VALUE_LENGTH = 512
+SAFE_PARAM_NAME = re.compile(r"^[A-Za-z0-9_.\-\[\]]{1,64}$")
+
+
+def forbidden_header_reason(name: str) -> str | None:
+    """返回值表示"有问题"，None 表示可以用。校验器与执行器共用同一条规则。"""
+    if name.lower() in FORBIDDEN_HEADERS:
+        return f"用例不得设置 {name}，该请求头由配置注入"
+    if not SAFE_PARAM_NAME.match(name):
+        return f"请求头名非法: {name!r}"
+    return None
+
+
+def value_problem(label: str, value: Any) -> str | None:
+    """参数值的规则：长度、控制字符、路径穿越。返回值表示"有问题"。"""
+    text = str(value)
+    if len(text) > MAX_VALUE_LENGTH:
+        return f"{label} 超过 {MAX_VALUE_LENGTH} 字符上限"
+    if any(ord(char) < 32 for char in text):
+        return f"{label} 含控制字符"
+    if ".." in text or "//" in text:
+        return f"{label} 含路径穿越片段"
+    return None
 
 READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 

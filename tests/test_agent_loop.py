@@ -151,11 +151,17 @@ def test_malformed_tool_arguments_do_not_crash_the_loop(specification) -> None:
     assert run.steps[0].tool_calls[0].error
 
 
-def test_loop_never_receives_the_target_address(specification) -> None:
+def test_loop_never_receives_the_target_address_or_a_credential(specification, monkeypatch) -> None:
+    """探测的是**值**，不是词。
+
+    提示词里出现 "Authorization" 是在告诉模型不要设置它，那不是泄密；
+    真正要守住的是：目标地址、以及凭据的值，都不能出现在模型看到的内容里。
+    """
+    monkeypatch.setenv("APROBE_TEST_TOKEN", "sekrit-value-must-not-leak")
     loop, _, client = make_loop(specification, [reply(("list_operations", {})), reply()])
     loop.run()
     transcript = str(client.calls)
-    for leak in ("http://", "127.0.0.1", "Authorization"):
+    for leak in ("http://", "127.0.0.1", "sekrit-value-must-not-leak"):
         assert leak not in transcript
 
 

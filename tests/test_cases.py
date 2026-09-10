@@ -127,3 +127,52 @@ def test_deterministic_generation_is_reproducible(specification, cases_path) -> 
     generated = generate_cases(specification).cases
     committed = [case for case in load_case_file(cases_path) if case.origin == "deterministic"]
     assert committed == generated
+
+
+# ---- 校验器与执行器必须对同一个请求给出同一套规则 ----
+
+
+def test_a_forbidden_header_is_caught_at_validation_time(specification) -> None:
+    """真实模型的第一版产出里就有这种用例：设置了 Authorization，于是永远跑不起来，
+    而 validate 当时说"无问题"——一份干净的用例文件里躺着跑不动的用例。"""
+    case = make(
+        "with-auth",
+        request=RequestSpec(
+            method="GET", path="/pets", headers={"Authorization": "Bearer abc"}
+        ),
+    )
+    problems = validate_cases([case], specification)
+    assert any("不得设置 Authorization" in problem for problem in problems)
+
+
+def test_an_unsafe_parameter_value_is_caught_at_validation_time(specification) -> None:
+    case = make("traversal", operation_id="getPetById",
+                request=RequestSpec(method="GET", path="/pets/{petId}",
+                                    path_values={"petId": "../../etc/passwd"}))
+    problems = validate_cases([case], specification)
+    assert any("路径穿越" in problem for problem in problems)
+
+
+def test_control_characters_in_a_query_value_are_caught_at_validation_time(specification) -> None:
+    case = make("ctrl", request=RequestSpec(method="GET", path="/pets", query={"q": "bad\nvalue"}))
+    problems = validate_cases([case], specification)
+    assert any("控制字符" in problem for problem in problems)
+
+
+def test_capture_references_are_not_value_checked_before_resolution(specification) -> None:
+    """`$captures.X` 的值要到运行期才知道，那时才检查——校验阶段不能误报它非法。"""
+    create = make(
+        "create-pet",
+        operation_id="createPet",
+        request=RequestSpec(method="POST", path="/pets", body={"name": "probe"}),
+        write=True,
+        creates_data=True,
+        captures={"pet_id": "$.id"},
+    )
+    consumer = make(
+        "use-it",
+        operation_id="getPetById",
+        request=RequestSpec(method="GET", path="/pets/{petId}", path_values={"petId": "$captures.pet_id"}),
+        requires=["create-pet"],
+    )
+    assert validate_cases([create, consumer], specification) == []

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .errors import CaseFileError
 from .models import Operation, Specification, TestCase
+from .policy import forbidden_header_reason, value_problem
 from .specification import schema_has_path
 
 #: 引用前序用例捕获值的写法
@@ -39,6 +40,30 @@ def capture_references(case: TestCase) -> set[str]:
     walk(case.request.query)
     walk(case.request.body)
     return found
+
+
+def _iter_request_scalars(case: TestCase):
+    """列出请求里会流进 URL / 请求头的标量参数。
+
+    `$captures.*` 引用跳过：它的值要到运行期才知道，那时会被同一套规则检查。
+    """
+    for name, value in (case.request.path_values or {}).items():
+        yield f"路径参数 {name}", value
+    for name, value in (case.request.query or {}).items():
+        for item in value if isinstance(value, list) else [value]:
+            yield f"查询参数 {name}", item
+    yield from _walk_body(case.request.body, "请求体")
+
+
+def _walk_body(node: object, label: str):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _walk_body(value, f"{label}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _walk_body(value, f"{label}[{index}]")
+    elif not (isinstance(node, str) and node.startswith(CAPTURE_PREFIX)):
+        yield label, node
 
 
 def _transitive_requires(case: TestCase, by_id: dict[str, TestCase]) -> set[str]:
@@ -120,6 +145,23 @@ def validate_cases(cases: list[TestCase], specification: Specification | None = 
 
     if _has_cycle(cases):
         problems.append("requires 之间存在环，无法确定执行顺序")
+
+    # 请求构造的规则要在校验阶段就生效：执行时会拒绝的东西，不能让 validate 说"无问题"。
+    # 否则一份干净的用例文件里可以躺着永远跑不起来的用例（实测中真实模型的产出就是这样）。
+    for case in cases:
+        for name, value in (case.request.headers or {}).items():
+            problem = forbidden_header_reason(str(name))
+            if problem:
+                problems.append(f"{case.id}: {problem}")
+            else:
+                named = value_problem(f"请求头 {name}", value)
+                if named:
+                    problems.append(f"{case.id}: {named}")
+            continue
+        for label, value in _iter_request_scalars(case):
+            problem = value_problem(label, value)
+            if problem:
+                problems.append(f"{case.id}: {problem}")
 
     # 链式用例（ADR-0004）：依赖与取值必须自洽。缺值时的正确行为是拒绝，不是编一个
     by_id = {case.id: case for case in cases}

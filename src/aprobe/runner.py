@@ -21,15 +21,8 @@ from .assertions import AssertionEvaluator, decide_verdict, get_json_path
 from .cases import CAPTURE_PREFIX
 from .errors import ConfigError, PolicyDeniedError
 from .models import Operation, Observation, RunProvenance, TestCase, TestRun, Verdict
-from .policy import TargetPolicy
+from .policy import SAFE_PARAM_NAME, TargetPolicy, forbidden_header_reason, value_problem
 from .sanitizer import REDACTED, sanitize_headers, sanitize_text, sanitize_value
-
-_MAX_VALUE_LENGTH = 512
-_SAFE_PARAM_NAME = re.compile(r"^[A-Za-z0-9_.\-\[\]]{1,64}$")
-_FORBIDDEN_HEADERS = frozenset(
-    {"authorization", "cookie", "host", "content-length", "transfer-encoding", "connection"}
-)
-
 
 @dataclass
 class BuiltRequest:
@@ -40,14 +33,11 @@ class BuiltRequest:
 
 
 def _check_value(label: str, value: Any) -> str:
-    text = str(value)
-    if len(text) > _MAX_VALUE_LENGTH:
-        raise PolicyDeniedError(f"{label} 超过 {_MAX_VALUE_LENGTH} 字符上限")
-    if any(ord(char) < 32 for char in text):
-        raise PolicyDeniedError(f"{label} 含控制字符")
-    if ".." in text or "//" in text:
-        raise PolicyDeniedError(f"{label} 含路径穿越片段")
-    return text
+    """把 policy 的规则变成拒绝。规则本身只有一处定义。"""
+    problem = value_problem(label, value)
+    if problem:
+        raise PolicyDeniedError(problem)
+    return str(value)
 
 
 class CredentialProvider:
@@ -122,7 +112,7 @@ def build_request(
     query_pairs: list[tuple[str, str]] = []
     for name, raw in (case.request.query or {}).items():
         value = resolve_captures(raw, variables, f"查询参数 {name}")
-        if not _SAFE_PARAM_NAME.match(str(name)):
+        if not SAFE_PARAM_NAME.match(str(name)):
             raise PolicyDeniedError(f"查询参数名非法: {name!r}")
         if isinstance(value, (list, tuple)):
             query_pairs.extend((str(name), _check_value(f"查询参数 {name}", item)) for item in value)
@@ -131,11 +121,9 @@ def build_request(
 
     headers: dict[str, str] = {}
     for name, value in (case.request.headers or {}).items():
-        lowered = str(name).lower()
-        if lowered in _FORBIDDEN_HEADERS:
-            raise PolicyDeniedError(f"用例不得设置 {name}，该请求头由配置注入")
-        if not _SAFE_PARAM_NAME.match(str(name)):
-            raise PolicyDeniedError(f"请求头名非法: {name!r}")
+        problem = forbidden_header_reason(str(name))
+        if problem:
+            raise PolicyDeniedError(problem)
         headers[str(name)] = _check_value(f"请求头 {name}", value)
     headers.setdefault("Accept", "application/json")
 
