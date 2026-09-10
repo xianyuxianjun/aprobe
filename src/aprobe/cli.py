@@ -16,7 +16,7 @@ from .assertions import AssertionEvaluator
 from .cases import dump_case_file, load_case_file, operations_by_id, order_cases, validate_cases
 from .config import DEFAULT_CONFIG_NAME, Config, load_config
 from .errors import AprobeError, CaseFileError, ConfigError, ExitCode, SpecError
-from .evaluation import evaluate_suite, gate, load_suite, render_report
+from .evaluation import compare, evaluate_suite, gate, load_suite, render_comparison, render_report
 from .models import (
     APROBE_VERSION,
     AgentBudget,
@@ -243,13 +243,6 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         raise CaseFileError("评估需要用例文件")
 
     specification = load_specification(spec_path)
-    cases = load_case_file(cases_path)
-    problems = validate_cases(cases, specification)
-    if problems:
-        for problem in problems:
-            print(f"  - {problem}", file=sys.stderr)
-        raise CaseFileError("用例文件非法，拒绝评估")
-
     policy = TargetPolicy(
         allow=config.target.allow,
         allow_write=config.allow_write,
@@ -257,6 +250,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         max_response_bytes=config.limits.max_response_bytes,
         retries=config.limits.retries,
     )
+    # 基准身份必须在跑之前确认：没声明基准的数字没有意义
     baseline = probe_baseline(policy, config.target.base_url, config.limits.timeout_ms)
     if baseline.get("scenario") != suite.scenario:
         raise ConfigError(
@@ -264,7 +258,6 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             "指标只在声明过的基准上才有意义，拒绝继续"
         )
 
-    by_id = operations_by_id(specification)
     runner = TestRunner(
         policy=policy,
         evaluator=AssertionEvaluator(specification),
@@ -272,42 +265,68 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         environ=dict(os.environ),
     )
     store = TraceStore(config.resolve(base, config.trace_db))
-    provenance = RunProvenance(
-        target=config.target.base_url,
-        spec_source=str(spec_path),
-        spec_title=specification.title,
-        spec_version=specification.version,
-        cases_file=str(cases_path),
-        planner=planner_label(cases),
-    )
-    ordered = order_cases(cases)
+    by_id = operations_by_id(specification)
 
-    def run_once() -> list[TestRun]:
-        produced: list[TestRun] = []
-        for case in ordered:
-            run = runner.execute(case=case, operation=by_id[case.operation_id], provenance=provenance)
-            store.record(run)
-            produced.append(run)
-        return produced
+    def measure(case_file: Path):
+        """用完全相同的方式度量一套用例——对比要公平，两侧必须走同一条路径。"""
+        cases = load_case_file(case_file)
+        problems = validate_cases(cases, specification)
+        if problems:
+            for problem in problems:
+                print(f"  - {problem}", file=sys.stderr)
+            raise CaseFileError(f"用例文件非法，拒绝评估：{case_file}")
+        ordered = order_cases(cases)
+        provenance = RunProvenance(
+            target=config.target.base_url,
+            spec_source=str(spec_path),
+            spec_title=specification.title,
+            spec_version=specification.version,
+            cases_file=str(case_file),
+            planner=planner_label(cases),
+        )
 
-    # 只统计“产出这批用例”的那次规划成本，而不是仓库里所有历史规划
-    case_ids = {case.id for case in ordered}
-    planning_runs = [run for run in store.list_agent_runs() if case_ids & set(run.produced_case_ids)]
-    report = evaluate_suite(
-        suite,
-        run_once=run_once,
-        scenario_version=str(baseline.get("version", "")),
-        repeat=args.repeat,
-        declared_by=planner_label(cases),
-        agent_steps=sum(run.consumed_steps for run in planning_runs),
-        agent_tokens=sum(run.consumed_tokens for run in planning_runs),
-    )
-    print(render_report(report))
+        def run_once() -> list[TestRun]:
+            produced: list[TestRun] = []
+            for case in ordered:
+                run = runner.execute(case=case, operation=by_id[case.operation_id], provenance=provenance)
+                store.record(run)
+                produced.append(run)
+            return produced
+
+        # 只统计"产出这批用例"的那次规划成本，而不是仓库里所有历史规划
+        case_ids = {case.id for case in ordered}
+        planning_runs = [run for run in store.list_agent_runs() if case_ids & set(run.produced_case_ids)]
+        return evaluate_suite(
+            suite,
+            run_once=run_once,
+            scenario_version=str(baseline.get("version", "")),
+            repeat=args.repeat,
+            declared_by=planner_label(cases),
+            agent_steps=sum(run.consumed_steps for run in planning_runs),
+            agent_tokens=sum(run.consumed_tokens for run in planning_runs),
+        )
+
+    reference = measure(cases_path)
+    print(render_report(reference))
     print(f"Trace 已记录到 {config.resolve(base, config.trace_db)}")
-    if args.json:
-        print(f"评估结果已写入 {_write(Path(args.json), report.to_json())}")
 
-    code, reason = gate(report, args.min_accuracy)
+    gated = reference
+    comparison = None
+    if args.against_cases:
+        subject = measure(Path(args.against_cases))
+        comparison = compare(reference, subject)
+        print(render_comparison(comparison, suite.name))
+        gated = subject
+        print(f"Trace 已记录到 {config.resolve(base, config.trace_db)}")
+
+    if args.json:
+        payload = {"report": json.loads(reference.model_dump_json())}
+        if comparison is not None:
+            payload["comparison"] = json.loads(comparison.model_dump_json())
+        print(f"评估结果已写入 {_write(Path(args.json), json.dumps(payload, ensure_ascii=False, indent=2))}")
+
+    # 门禁只作用于"要交付的那套用例"（有对比时是右侧），参考侧只用来做比较
+    code, reason = gate(gated, args.min_accuracy)
     if reason:
         print(f"aprobe: {reason}", file=sys.stderr)
     return code
@@ -461,6 +480,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="准确率门槛；缺省时任何不一致都算失败（更严格）",
+    )
+    evaluate.add_argument(
+        "--against-cases",
+        default=None,
+        help="第二套用例文件：在同一基准与同一套标注下对比两种规划器的差距",
     )
     evaluate.add_argument("--json", default=None, help="导出评估结果的路径")
     evaluate.set_defaults(func=cmd_evaluate)

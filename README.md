@@ -71,6 +71,39 @@
 - 它证明的是**管线可复现、可度量、能抓住注入的每一类偏差，且漏报会被单独拦下**。
 - 想要有说服力的数字，需要基准由第三方提供、标注由另一个人写。
 
+## 规划器对比（项目最核心的数字）
+
+同一基准（`edgecases-violating`，注入了 9 处违约）、同一套标注，**只换用例集**：
+
+| 指标 | 仅确定性生成 | Agent 补齐后 |
+| --- | --- | --- |
+| 覆盖的用例 | 9 | 12 |
+| 准确率（分母是各自的覆盖数） | 100.0% | 100.0% |
+| 发现违约 / 注入违约 | 6/9 | 9/9 |
+| **违约发现率** | **66.7%** | **100.0%** |
+| 未被覆盖的标注 | 3 | 0 |
+| Agent 步数 / token | — | 3 / 450 |
+
+**先看左边那列**：准确率 100%，违约发现率只有 66.7%。覆盖得少的用例集准确率反而更好看——所以准确率不能用来做对比，`defect_detection_rate` 可以，因为它的分母是固定的标注集合。这就是为什么度量模型要单独有这一个指标。
+
+补上来的 3 条全部是**业务规则与语义**：`total` 必须等于 `items` 条数（含空列表），以及"重定向没有被跟随"。schema 校验对它们无能为力。
+
+**这个数字的限度，必须一并读：**
+
+- 右侧的"Agent"是 `mock/model_server.py` 这个**脚本替身**，不是真实模型。它度量的是这条管线**能把"会读语义的用例设计"带进来多少价值**，即用例设计能力在这套基准上的上界——不是某个模型的真实水平。
+- 450 token 是替身编造的，不代表真实成本。
+
+复现：
+
+```bash
+python mock/edge_service.py --scenario violating --port 8160
+aprobe evaluate --config aprobe.yaml --suite eval/edgecases-violating.yaml \
+  --target http://127.0.0.1:8160 \
+  --cases cases/edgecases-degraded.yaml --against-cases cases/edgecases-agent.yaml
+```
+
+CI 把这条对比作为常驻项：`scripts/evaluate_all.sh` 会断言这组差值，退化了就红。
+
 ## 持续集成
 
 `.github/workflows/ci.yml` 跑三件事：`pytest`、`ruff --select F`（只看未定义名与未使用导入/变量，不引入风格门禁）、以及在全部基准上回放全部样例集。
@@ -79,6 +112,7 @@
 
 - **假阴性单独构成失败**，不参与准确率平均——漏报违约比误报危险得多。
 - 指定 `--min-accuracy` 就按门槛判；不指定时任何不一致都算失败（更严格）。
+- 有 `--against-cases` 时门禁只作用于右侧（要交付的那套用例），左侧只作参照。
 
 本地跑同一条命令即可：
 
@@ -208,7 +242,12 @@ mock/
   mock_service.py    评估基准 #1：Petstore（被测目标）
   edge_service.py    评估基准 #2：契约边界，每接口一种偏差
   model_server.py    模型端点替身（不是被测目标）
-eval/                四个评估样例集与归因演示脚本
+eval/                四个评估样例集、归因演示脚本、Agent 用例脚本替身
+cases/
+  petstore.yaml          示例用例（确定性 + 人工）
+  edgecases.yaml         同上，用于契约边界基准
+  edgecases-degraded.yaml  仅确定性生成的快照（对比的左侧）
+  edgecases-agent.yaml     Agent 补齐之后的快照（对比的右侧）
 scripts/
   evaluate_all.sh    在全部基准上回放全部样例集（CI 用的同一条命令）
 .github/workflows/   CI：pytest + ruff -F + 评估门禁

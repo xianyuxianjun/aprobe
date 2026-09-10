@@ -14,7 +14,16 @@ from pathlib import Path
 from conftest import write_config
 
 from aprobe.cli import main
-from aprobe.evaluation import EvalSuite, Expectation, evaluate_suite, gate, load_suite, render_report
+from aprobe.evaluation import (
+    EvalSuite,
+    Expectation,
+    compare,
+    evaluate_suite,
+    gate,
+    load_suite,
+    render_comparison,
+    render_report,
+)
 from aprobe.models import Observation, TerminationReason, TestRun, Verdict
 
 REPO = Path(__file__).resolve().parents[1]
@@ -235,9 +244,11 @@ def test_evaluate_exports_machine_readable_result(tmp_path, spec_path, cases_pat
     )
     assert code == 0, capsys.readouterr().out
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["metrics"]["accuracy"] == 1.0
-    assert payload["scenario_version"] == "1.0.0"
-    assert len(payload["outcomes"]) == 7
+    report = payload["report"]
+    assert report["metrics"]["accuracy"] == 1.0
+    assert report["scenario_version"] == "1.0.0"
+    assert len(report["outcomes"]) == 7
+    assert "comparison" not in payload  # 没有 --against-cases 就不产生对比
 
 
 def test_all_four_bundled_suites_load() -> None:
@@ -332,3 +343,91 @@ def test_edge_baseline_violating_catches_every_injected_deviation(
     assert "判定准确率 | 100.0%" in output
     assert "假阴性（应为失败，实际通过） | 0" in output
     assert "无法判定 | 1" in output  # 响应不是 JSON：无法校验，只能说无法判定
+
+
+# ---- 违约发现率：唯一可以跨覆盖数相减的指标 ----
+
+
+def test_uncovered_labels_are_reported_as_impossible_to_detect() -> None:
+    report = evaluate_suite(
+        suite(("a", Verdict.PASSED), ("b", Verdict.FAILED)),
+        run_once=lambda: [run("a", Verdict.PASSED)],  # b 完全没有用例覆盖
+    )
+    assert report.metrics.total == 1  # 只统计被覆盖到的标注
+    assert report.metrics.labelled == 2
+    assert report.metrics.uncovered == 1
+    assert any("不可能被发现" in note for note in report.notes)
+
+
+def test_detection_rate_uses_the_full_label_set_as_denominator() -> None:
+    """覆盖得少反而更容易准确率好看——所以准确率不能用来比较，发现率才可以。"""
+    thin = evaluate_suite(
+        suite(("a", Verdict.PASSED), ("b", Verdict.FAILED)),
+        run_once=lambda: [run("a", Verdict.PASSED)],
+    )
+    full = evaluate_suite(
+        suite(("a", Verdict.PASSED), ("b", Verdict.FAILED)),
+        run_once=lambda: [run("a", Verdict.PASSED), run("b", Verdict.FAILED)],
+    )
+    assert thin.metrics.accuracy == full.metrics.accuracy == 1.0  # 准确率看起来一样好
+    assert thin.metrics.total_defects == full.metrics.total_defects == 1
+    assert thin.metrics.detected_defects == 0
+    assert full.metrics.detected_defects == 1
+    assert thin.metrics.defect_detection_rate == 0.0
+    assert full.metrics.defect_detection_rate == 1.0
+
+
+def test_inconclusive_does_not_count_as_detecting_a_defect() -> None:
+    report = evaluate_suite(
+        suite(("a", Verdict.FAILED)),
+        run_once=lambda: [run("a", Verdict.INCONCLUSIVE, evidence=0)],
+    )
+    assert report.metrics.total_defects == 1
+    assert report.metrics.detected_defects == 0
+    assert report.metrics.defect_detection_rate == 0.0
+
+
+def test_comparison_reports_the_detection_delta() -> None:
+    left = evaluate_suite(
+        suite(("a", Verdict.PASSED), ("b", Verdict.FAILED)), run_once=lambda: [run("a", Verdict.PASSED)]
+    )
+    right = evaluate_suite(
+        suite(("a", Verdict.PASSED), ("b", Verdict.FAILED)),
+        run_once=lambda: [run("a", Verdict.PASSED), run("b", Verdict.FAILED)],
+    )
+    comparison = compare(left, right)
+    assert comparison.detection_delta == 1.0
+    assert comparison.coverage_delta == 1
+    text = render_comparison(comparison, "unit")
+    assert "违约发现率" in text
+    assert "只有违约发现率可以直接相减" in text
+    assert "不构成「某模式更准确」的一般结论" in text
+
+
+def test_cli_compares_two_case_sets_on_the_same_baseline(
+    tmp_path, edge_spec_path, edge_cases_path, edge_violating, capsys
+) -> None:
+    """仓库里那两套用例的真实差值：仅确定性生成 vs Agent 补齐之后。"""
+    degraded = REPO / "cases" / "edgecases-degraded.yaml"
+    agent = REPO / "cases" / "edgecases-agent.yaml"
+    config = write_config(tmp_path, base_url=edge_violating.base_url, spec=edge_spec_path, cases=degraded)
+    code = main(
+        [
+            "evaluate",
+            "--config",
+            str(config),
+            "--suite",
+            str(EDGE_VIOLATING_SUITE),
+            "--spec",
+            str(edge_spec_path),
+            "--cases",
+            str(degraded),
+            "--against-cases",
+            str(agent),
+        ]
+    )
+    output = capsys.readouterr().out
+    assert code == 0, output
+    assert "发现违约 / 注入违约 | 6/9 | 9/9" in output
+    assert "**66.7%** | **100.0%** | **+33.3%**" in output
+    assert "未被覆盖的标注 | 3 | 0" in output

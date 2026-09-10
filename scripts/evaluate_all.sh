@@ -64,6 +64,19 @@ for entry in "${suites[@]}"; do
   fi
 done
 
+# 规划器对比：仅确定性生成 vs Agent 补齐之后。
+# 这条断言把项目最核心的主张（业务规则类违约需要会读语义的用例设计者）变成回归测试。
+echo "=== 规划器对比：edgecases-violating ==="
+if ! "$APROBE" evaluate \
+    --config aprobe.yaml \
+    --suite eval/edgecases-violating.yaml \
+    --target http://127.0.0.1:18083 \
+    --cases cases/edgecases-degraded.yaml \
+    --against-cases cases/edgecases-agent.yaml \
+    --json "$REPORTS/compare-edgecases-violating.json"; then
+  failed=1
+fi
+
 if [ "$failed" -ne 0 ]; then
   echo "评估未达标：见 $REPORTS/eval-*.json" >&2
   exit 1

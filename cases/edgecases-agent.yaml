@@ -1,0 +1,221 @@
+version: 1
+cases:
+- id: get-broken-json
+  operation_id: getBrokenJson
+  summary: 声明为 application/json，用来观察"响应不是 JSON"时的结论
+  request:
+    method: GET
+    path: /contracts/broken-json
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-empty-list
+  operation_id: getEmptyList
+  summary: 空列表（item 条数为 0）
+  request:
+    method: GET
+    path: /contracts/empty
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-enum-field
+  operation_id: getEnumField
+  summary: 枚举取值
+  request:
+    method: GET
+    path: /contracts/enum
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-nested-object
+  operation_id: getNestedObject
+  summary: 嵌套对象与数组元素类型
+  request:
+    method: GET
+    path: /contracts/nested
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-no-content
+  operation_id: getNoContent
+  summary: 204：不声明任何响应体
+  request:
+    method: GET
+    path: /contracts/no-content
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 204
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-number-shapes
+  operation_id: getNumberShapes
+  summary: number / integer / boolean 的形状
+  request:
+    method: GET
+    path: /contracts/numbers
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-pagination
+  operation_id: getPagination
+  summary: 分页结构（业务规则：total 必须等于 items 条数）
+  request:
+    method: GET
+    path: /contracts/pagination
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-redirect
+  operation_id: getRedirect
+  summary: 302：aprobe 禁止跟随重定向，所以重定向本身是可断言的结果
+  request:
+    method: GET
+    path: /contracts/redirect
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 302
+  requires: []
+  write: false
+  origin: deterministic
+- id: get-required-fields
+  operation_id: getRequiredFields
+  summary: 必填字段与 additionalProperties
+  request:
+    method: GET
+    path: /contracts/required
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  requires: []
+  write: false
+  origin: deterministic
+- id: edge-pagination-total-matches-items
+  operation_id: getPagination
+  summary: 业务规则：total 必须等于 items 的条数
+  request:
+    method: GET
+    path: /contracts/pagination
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  - kind: json_path
+    path: $.items
+    length_equals_path: $.total
+  requires: []
+  write: false
+  origin: agent
+- id: edge-empty-total-matches-items
+  operation_id: getEmptyList
+  summary: 空列表也必须满足 total == len(items)
+  request:
+    method: GET
+    path: /contracts/empty
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 200
+  - kind: json_schema
+    response: '200'
+  - kind: json_path
+    path: $.items
+    length_equals_path: $.total
+  requires: []
+  write: false
+  origin: agent
+- id: edge-redirect-is-not-followed
+  operation_id: getRedirect
+  summary: 契约允许 302；要断言的是重定向本身没被跟随
+  request:
+    method: GET
+    path: /contracts/redirect
+    path_values: {}
+    query: {}
+    headers: {}
+  assertions:
+  - kind: status
+    in:
+    - 302
+  - kind: header
+    name: location
+    contains: /contracts/required
+  requires: []
+  write: false
+  origin: agent
