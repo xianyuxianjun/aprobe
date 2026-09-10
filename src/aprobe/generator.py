@@ -82,7 +82,7 @@ def generate_cases(specification: Specification, origin: str = "deterministic") 
             None,
         )
         if json_response is not None and json_response.schema_pointer:
-            assertions.append(Assertion(kind=AssertionKind.JSON_SCHEMA, pointer=json_response.schema_pointer))
+            assertions.append(Assertion(kind=AssertionKind.JSON_SCHEMA, response=json_response.status))
 
         base_id = case_id_for(operation)
         candidate = base_id

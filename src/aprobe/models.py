@@ -45,7 +45,7 @@ class AssertionKind(str, enum.Enum):
 #: 每种 Assertion 允许出现的字段，用来拒绝"看起来像断言、其实没人求值"的写法。
 _ASSERTION_FIELDS: dict[AssertionKind, frozenset[str]] = {
     AssertionKind.STATUS: frozenset({"in"}),
-    AssertionKind.JSON_SCHEMA: frozenset({"pointer", "schema"}),
+    AssertionKind.JSON_SCHEMA: frozenset({"response", "schema"}),
     AssertionKind.JSON_PATH: frozenset(
         {
             "path",
@@ -75,8 +75,8 @@ class Assertion(BaseModel):
     # status
     in_: list[int] | None = Field(default=None, alias="in")
 
-    # json_schema：pointer 指向 OpenAPI 文档内的 schema，schema 为内联 JSON Schema
-    pointer: str | None = None
+    # json_schema：response 是响应码（指向契约里该 Operation 已声明的响应），schema 为内联 JSON Schema
+    response: str | None = None
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
 
     # json_path / header
@@ -102,9 +102,11 @@ class Assertion(BaseModel):
         present = {
             field
             for field in self.model_fields_set
-            if field not in {"kind"} and getattr(self, field if field != "in" else "in_") is not None
+            if field != "kind" and getattr(self, field, None) is not None
         }
-        normalised = {"in" if field == "in_" else field for field in present}
+        fields = type(self).model_fields
+        # 统一用对外别名（in / schema）做字段判断，避免 in_ 与 schema_ 这类内部名泄到报错信息里
+        normalised = {fields[field].alias or field for field in present}
         unknown = normalised - allowed
         if unknown:
             raise ValueError(f"{self.kind.value} 断言不支持字段: {sorted(unknown)}")
@@ -112,8 +114,8 @@ class Assertion(BaseModel):
             raise ValueError(f"{self.kind.value} 断言至少需要一个字段")
 
         if self.kind is AssertionKind.JSON_SCHEMA:
-            if (self.pointer is None) == (self.schema_ is None):
-                raise ValueError("json_schema 断言必须且只能提供 pointer 或 schema 之一")
+            if (self.response is None) == (self.schema_ is None):
+                raise ValueError("json_schema 断言必须且只能提供 response 或 schema 之一")
         if self.kind is AssertionKind.JSON_PATH:
             if self.path is None:
                 raise ValueError("json_path 断言必须提供 path")
@@ -198,6 +200,27 @@ class Specification(BaseModel):
             seen.add(ref)
             node = resolve_pointer(self.document, ref)
         return node
+
+    def operation(self, operation_id: str) -> Operation:
+        for candidate in self.operations:
+            if candidate.operation_id == operation_id:
+                return candidate
+        raise ValueError(f"规范中不存在 operation_id={operation_id}")
+
+    def response_schema(self, operation_id: str, status: str) -> dict[str, Any]:
+        """某个 Operation 某个响应码所声明的 JSON schema，已解析为自包含文档。
+
+        用例只声明“哪个 Operation 的哪个响应”，JSON Pointer 是本模块的实现细节，
+        不允许出现在用例文件里。
+        """
+        operation = self.operation(operation_id)
+        for response in operation.responses:
+            if response.status == str(status):
+                if not response.schema_pointer:
+                    raise ValueError(f"{operation_id} 的 {status} 响应未声明 JSON schema")
+                return self.schema_document(response.schema_pointer)
+        declared = [item.status for item in operation.responses]
+        raise ValueError(f"{operation_id} 未声明 {status} 响应（已声明：{declared}）")
 
     def schema_document(self, pointer: str) -> dict[str, Any]:
         """取出一份可以直接交给 JSON Schema 校验器的自包含文档。

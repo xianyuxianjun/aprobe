@@ -102,12 +102,16 @@
 
 ## 四、已知的债（先修，不要在它们上面继续加功能）
 
-1. **RFC6901 指针泄漏进了人工审阅的产物。** `cases/petstore.yaml` 里出现 `#/paths/~1pets/get/responses/200/content/application~1json/schema`。指针是 `specification` 的实现细节，却成了用例文件格式的一部分；而 ADR-0001 要求这个文件是给人审阅的。
-   → **M1 之前修**：用例只写 `operation_id` + 响应码，由确定性层解析成指针。否则 Agent 会批量生产这种不可读的字符串。
-2. **`ReportMeta` 在两个调用点被重复构造。** 它是 `report` 模块的接口，不该由调用方拼两遍。
-3. **`cli._exit_code` 与 `cli._load_context` 是真实逻辑，却住在适配器里。** CI 门禁语义（策略拒绝优先 → failed → inconclusive，`--fail-on none` 只改退出码不改结论）有明确规则，应当能被直接测试。
+1. **`ReportMeta` 在两个调用点被重复构造。** 它是 `report` 模块的接口，不该由调用方拼两遍。
 
-另有一处纯坏代码：`sanitizer.sanitize_text` 里的嵌套三元 lambda。按两本书的标准都该改，且它换不来任何深度。
+### 已还的债（不要退回去，每条都有守护测试）
+
+- **JSON Pointer 曾经泄进用例文件格式。** 现在用例只写 `operation_id` + 响应码（`{kind: json_schema, response: "200"}`），指针由 `Specification.response_schema()` 解析。守护：`tests/test_cases.py::test_case_file_does_not_leak_json_pointers`。
+  → 教训：当一个人工审阅的格式里出现了另一个模块的实现细节，那是 information leakage，不是“方便”。
+- **CI 门禁语义曾经住在 `cli.py`。** 现在是 `report.gate_exit_code()`，可直接测到。守护：`tests/test_report.py::test_gate_exit_code_priorities`。
+  → 教训：有规则、有分支、需要被直接测到的东西，不属于适配器。
+- **`sanitizer.sanitize_text` 曾有一个嵌套三元 lambda。** 现在是具名的 `_mask()`。
+- **断言字段校验曾漏掉 `schema_` → `schema` 的别名映射**，因此内联 schema 会被误报为“不支持字段”。现在统一按对外别名判定。
 
 ---
 

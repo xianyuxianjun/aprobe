@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from .errors import ExitCode
 from .models import TerminationReason, TestRun, Verdict
 
 
@@ -169,6 +170,23 @@ def render_junit(runs: list[TestRun], meta: ReportMeta) -> str:
             skipped = ElementTree.SubElement(testcase, "skipped", {"message": "无法判定"})
             skipped.text = detail
     return ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+def gate_exit_code(runs: list[TestRun], fail_on: str = "failed") -> int:
+    """把一批 TestRun 折成 CI 门禁退出码。
+
+    优先序：目标被策略拒绝 > 断言失败 > 存在无法判定。
+    fail_on="none" 只改退出码，不改任何已记录的结论。
+    """
+    if any(run.termination_reason is TerminationReason.POLICY_DENIED for run in runs):
+        return ExitCode.POLICY_DENIED
+    if fail_on == "none":
+        return ExitCode.OK
+    if any(run.verdict is Verdict.FAILED for run in runs):
+        return ExitCode.ASSERTION_FAILED
+    if any(run.verdict is Verdict.INCONCLUSIVE for run in runs):
+        return ExitCode.ASSERTION_FAILED if fail_on == "inconclusive" else ExitCode.INCONCLUSIVE
+    return ExitCode.OK
 
 
 RENDERERS = {"md": render_markdown, "json": render_json, "junit": render_junit}

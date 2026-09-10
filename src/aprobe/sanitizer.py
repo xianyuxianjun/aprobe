@@ -74,10 +74,15 @@ _TEXT_PATTERNS = (
 )
 
 
+def _mask(match: re.Match[str]) -> str:
+    prefix = match.group(1)
+    return f'{prefix}"{REDACTED}"' if prefix.rstrip().endswith(":") else f"{prefix}{REDACTED}"
+
+
 def sanitize_text(text: str) -> str:
     """针对非 JSON 响应体的兜底脱敏，避免密钥以字符串形式落库。"""
     for pattern in _TEXT_PATTERNS:
-        text = pattern.sub(lambda match: f'{match.group(1)}"{REDACTED}"' if match.group(1).rstrip().endswith(":") else f"{match.group(1)}{REDACTED}", text)
+        text = pattern.sub(_mask, text)
     return text
 
 

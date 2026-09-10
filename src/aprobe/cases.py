@@ -111,6 +111,13 @@ def validate_cases(cases: list[TestCase], specification: Specification | None = 
         extra = sorted(provided - {parameter.name for parameter in operation.parameters if parameter.location == "path"})
         if extra:
             problems.append(f"{case.id}: 提供了未声明的路径参数 {extra}")
+        declared_statuses = {response.status for response in operation.responses}
+        for assertion in case.assertions:
+            if assertion.response is not None and assertion.response not in declared_statuses:
+                problems.append(
+                    f"{case.id}: 断言引用了 {operation.operation_id} 未声明的响应码 {assertion.response}"
+                    f"（已声明：{sorted(declared_statuses)}）"
+                )
     return problems
 
 

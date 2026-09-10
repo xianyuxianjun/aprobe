@@ -103,6 +103,21 @@ def test_generate_never_invents_a_path_value(specification) -> None:
     assert all(not case.request.path_values for case in result.cases)
 
 
+def test_case_file_does_not_leak_json_pointers(cases_path) -> None:
+    """JSON Pointer 是 specification 的实现细节，不允许出现在人工审阅的用例文件里。"""
+    text = cases_path.read_text(encoding="utf-8")
+    assert "~1" not in text
+    assert "#/" not in text
+
+
+def test_unknown_response_code_in_a_case_is_reported(specification) -> None:
+    problems = validate_cases(
+        [make("x", assertions=[Assertion(kind=AssertionKind.JSON_SCHEMA, response="418")])],
+        specification,
+    )
+    assert any("未声明的响应码 418" in problem for problem in problems)
+
+
 def test_deterministic_generation_is_reproducible(specification, cases_path) -> None:
     """已提交用例文件里 origin=deterministic 的部分，必须与重新生成的结果逐字段一致。
 

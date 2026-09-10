@@ -206,7 +206,7 @@ class TestRunner:
                 spec_version=spec_version,
             )
 
-        results = self.evaluator.evaluate_all(case.assertions, observation)
+        results = self.evaluator.evaluate_all(case.assertions, observation, operation.operation_id)
         verdict, termination = decide_verdict(results)
         return TestRun(
             run_id=run_id,

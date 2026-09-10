@@ -79,12 +79,14 @@ class AssertionEvaluator:
     def __init__(self, specification: Specification | None = None) -> None:
         self._specification = specification
 
-    def evaluate_all(self, assertions: list[Assertion], observation: Observation) -> list[AssertionResult]:
-        return [self.evaluate(assertion, observation) for assertion in assertions]
+    def evaluate_all(
+        self, assertions: list[Assertion], observation: Observation, operation_id: str
+    ) -> list[AssertionResult]:
+        return [self.evaluate(assertion, observation, operation_id) for assertion in assertions]
 
-    def evaluate(self, assertion: Assertion, observation: Observation) -> AssertionResult:
+    def evaluate(self, assertion: Assertion, observation: Observation, operation_id: str) -> AssertionResult:
         try:
-            return self._dispatch(assertion, observation)
+            return self._dispatch(assertion, observation, operation_id)
         except Exception as exc:  # 求值失败只能是「无法判定」，不允许变成通过
             return AssertionResult(
                 assertion=assertion,
@@ -93,7 +95,7 @@ class AssertionEvaluator:
                 detail=f"{type(exc).__name__}: {exc}",
             )
 
-    def _dispatch(self, assertion: Assertion, observation: Observation) -> AssertionResult:
+    def _dispatch(self, assertion: Assertion, observation: Observation, operation_id: str) -> AssertionResult:
         if observation.error and observation.status_code is None:
             return AssertionResult(
                 assertion=assertion,
@@ -104,7 +106,7 @@ class AssertionEvaluator:
         if assertion.kind is AssertionKind.STATUS:
             return self._status(assertion, observation)
         if assertion.kind is AssertionKind.JSON_SCHEMA:
-            return self._json_schema(assertion, observation)
+            return self._json_schema(assertion, observation, operation_id)
         if assertion.kind is AssertionKind.JSON_PATH:
             return self._json_path(assertion, observation)
         if assertion.kind is AssertionKind.HEADER:
@@ -122,7 +124,7 @@ class AssertionEvaluator:
             detail=f"期望之一 {expected}",
         )
 
-    def _json_schema(self, assertion: Assertion, observation: Observation) -> AssertionResult:
+    def _json_schema(self, assertion: Assertion, observation: Observation, operation_id: str) -> AssertionResult:
         if observation.body_json is None:
             return AssertionResult(
                 assertion=assertion,
@@ -130,16 +132,16 @@ class AssertionEvaluator:
                 observed="响应体不是 JSON",
                 detail=observation.json_error or "响应体为空或无法解析为 JSON",
             )
-        if assertion.pointer is not None:
+        if assertion.response is not None:
             if self._specification is None:
                 return AssertionResult(
                     assertion=assertion,
                     verdict=Verdict.INCONCLUSIVE,
                     observed="缺少规范上下文",
-                    detail=f"无法解析 {assertion.pointer}",
+                    detail=f"无法解析 {operation_id} 的 {assertion.response} 响应",
                 )
             try:
-                schema = self._specification.schema_document(assertion.pointer)
+                schema = self._specification.response_schema(operation_id, assertion.response)
             except ValueError as exc:
                 return AssertionResult(
                     assertion=assertion,
@@ -171,7 +173,7 @@ class AssertionEvaluator:
                 assertion=assertion,
                 verdict=Verdict.PASSED,
                 observed="响应体符合契约",
-                detail=assertion.pointer or "内联 schema",
+                detail=f"{operation_id} 的 {assertion.response} 响应" if assertion.response else "内联 schema",
             )
         first = errors[0]
         location = "/".join(str(part) for part in first.path) or "(root)"

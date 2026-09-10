@@ -75,7 +75,7 @@ def test_contract_violation_is_detected(specification, violating) -> None:
                 Assertion(kind=AssertionKind.STATUS, **{"in": [200]}),
                 Assertion(
                     kind=AssertionKind.JSON_SCHEMA,
-                    pointer="#/paths/~1pets~1stats/get/responses/200/content/application~1json/schema",
+                    response="200",
                 ),
             ],
         ),

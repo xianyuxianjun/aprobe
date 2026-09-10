@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ElementTree
 from datetime import datetime, timezone
 
 from aprobe.models import Observation, TerminationReason, TestRun, Verdict
-from aprobe.report import ReportMeta, render_json, render_junit, render_markdown, summarize
+from aprobe.report import ReportMeta, gate_exit_code, render_json, render_junit, render_markdown, summarize
 
 
 def make_run(case_id: str, verdict: Verdict, reason: TerminationReason = TerminationReason.COMPLETED) -> TestRun:
@@ -52,6 +52,23 @@ def test_json_report_is_machine_readable() -> None:
     payload = json.loads(render_json(runs(), ReportMeta()))
     assert payload["summary"]["total"] == 3
     assert [item["case_id"] for item in payload["runs"]] == ["a", "b", "c"]
+
+
+def test_gate_exit_code_priorities() -> None:
+    passed = make_run("a", Verdict.PASSED)
+    failed = make_run("b", Verdict.FAILED)
+    inconclusive = make_run("c", Verdict.INCONCLUSIVE, TerminationReason.REQUEST_FAILED)
+    denied = make_run("d", Verdict.INCONCLUSIVE, TerminationReason.POLICY_DENIED)
+
+    assert gate_exit_code([passed]) == 0
+    assert gate_exit_code([passed, failed]) == 1
+    assert gate_exit_code([passed, inconclusive]) == 2
+    assert gate_exit_code([passed, inconclusive, failed]) == 1
+    assert gate_exit_code([passed, denied, failed]) == 4
+
+    assert gate_exit_code([passed, inconclusive], "inconclusive") == 1
+    assert gate_exit_code([passed, failed], "none") == 0
+    assert gate_exit_code([passed, denied], "none") == 4
 
 
 def test_junit_report_maps_verdicts_to_elements() -> None:

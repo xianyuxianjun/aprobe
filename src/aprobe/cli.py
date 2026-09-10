@@ -18,7 +18,7 @@ from .errors import AprobeError, CaseFileError, ConfigError, ExitCode, SpecError
 from .generator import generate_cases
 from .models import APROBE_VERSION, DETERMINISTIC_PLANNER_VERSION, TerminationReason, TestRun, Verdict
 from .policy import TargetPolicy
-from .report import RENDERERS, ReportMeta, summarize
+from .report import RENDERERS, ReportMeta, gate_exit_code, summarize
 from .runner import CredentialProvider, TestRunner
 from .specification import load_specification
 from .trace import TraceStore
@@ -166,26 +166,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         if destination:
             print(f"报告已写入 {_write(Path(destination), RENDERERS[fmt](runs, meta))}")
 
-    return _exit_code(runs, args.fail_on)
+    return gate_exit_code(runs, args.fail_on)
 
 
 def _write(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
-
-
-def _exit_code(runs: list[TestRun], fail_on: str) -> int:
-    """退出码语义：策略拒绝优先，其次是失败，其次是无法判定。"""
-    if any(run.termination_reason is TerminationReason.POLICY_DENIED for run in runs):
-        return ExitCode.POLICY_DENIED
-    if fail_on == "none":
-        return ExitCode.OK
-    if any(run.verdict is Verdict.FAILED for run in runs):
-        return ExitCode.ASSERTION_FAILED
-    if any(run.verdict is Verdict.INCONCLUSIVE for run in runs):
-        return ExitCode.ASSERTION_FAILED if fail_on == "inconclusive" else ExitCode.INCONCLUSIVE
-    return ExitCode.OK
 
 
 def cmd_report(args: argparse.Namespace) -> int:
