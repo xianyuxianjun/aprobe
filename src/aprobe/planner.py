@@ -42,8 +42,14 @@ GENERATE_SYSTEM_PROMPT = """你是接口契约测试的用例设计者。你的�
 3. 每条用例至少有一条断言。断言是确定性的：status / json_schema / json_path / header / response_time_ms。
    其中 json_path 支持 equals、equals_path、length_equals_path、exists、type、contains、
    length_equals、min_length、max_length。
-4. 需要路径参数或请求体才能调用的 Operation，如果你无法从规范确定合法取值，就不要为它造用例——
-   留空比编造一个假 id 更有价值。但这只是取值的限制，不是"跳过这个 Operation"的理由。
+4. 有些 Operation 需要路径参数或请求体才能调用，**不要因此跳过它们**。
+   真实项目里这类接口占多数，"自动生成的测试跑不动"就是这么来的。你的办法是造出前置条件：
+   - 如果规范里有能创建该资源的 Operation，先提交创建用例，用 `captures` 把 id 取回来
+     （例如 `captures: {pet_id: "$.id"}`），再用 `$captures.pet_id` 作为后续用例的参数值；
+   - 后续用例必须用 `requires` 声明它依赖哪条用例；
+   - 捕获路径必须在创建响应里真实存在——校验器会去契约里核对，编造会被拒绝；
+   - 创建数据的用例要同时声明 `write: true` 与 `creates_data: true`。
+   只有在规范里**确实找不到**任何能造出该前置条件的途径时，才留白，并说明原因。
 5. rule 层的断言是跨字段/跨结构的，用 json_path 的 equals_path 或 length_equals_path 表达，
    例如：items 的条数必须等于 total；某个字段必须等于另一个字段；空列表时 total 必须为 0。
 6. 提交被拒绝时，按返回的具体问题修正后重试；同一错误不要重复提交。

@@ -29,6 +29,7 @@
 | Verdict 合成：失败优先，其次无法判定 | 已实现 | 同上 |
 | 证据脱敏（请求头、JSON 敏感键、非 JSON 文本、URL userinfo） | 已实现 | `pytest tests/test_runner.py` |
 | 用例文件校验（重复 id、陈旧路径、写声明、requires 环）与确定性执行顺序 | 已实现 | `pytest tests/test_cases.py` |
+| 链式用例：`requires` 依赖 + `captures` 取值，让需要前置资源的接口变得可执行 | 已实现 | `pytest tests/test_chained_cases.py` |
 | 权威 Trace 持久化（SQLite） | 已实现 | `pytest tests/test_cli.py` |
 | 报告导出 Markdown / JSON / JUnit | 已实现 | `pytest tests/test_report.py` |
 | CLI：`generate` / `validate` / `run` / `report` 与退出码语义 | 已实现 | `pytest tests/test_cli.py` |
@@ -71,6 +72,45 @@
 - 50 条标注、两个自建基准，而且用例、基准、标注出自同一个作者与同一轮工作。100% 是预期结果，不是准确率声明。
 - 它证明的是**管线可复现、可度量、能抓住注入的每一类偏差，且漏报会被单独拦下**。
 - 想要有说服力的数字，需要基准由第三方提供、标注由另一个人写。
+
+## 让不可执行的接口变成可执行的
+
+从 OpenAPI 自动生成的用例，在真实项目里大多**跑不动**：多数接口需要路径参数、请求体或鉴权态，
+而这些值只能靠"先创建资源"得到。自带基准里 9 个接口只有 6 个能生成可执行用例，另外 3 个只能
+记进 `needs_input`——所谓"覆盖率"是假的。这是"自动生成接口测试"在真实项目里用处有限的主要原因。
+
+现在 Agent 会规划**资源生命周期**，把依赖链确定性地写进用例文件：
+
+```yaml
+- id: create-pet
+  operation_id: createPet
+  request: {method: POST, path: /pets, body: {name: "probe-1"}}
+  write: true
+  creates_data: true
+  captures: {pet_id: "$.id"}        # 从创建响应里取值
+
+- id: get-pet-by-id-created-roundtrip
+  operation_id: getPetById
+  requires: [create-pet]            # 顺序由确定性代码拓扑排序
+  request: {method: GET, path: "/pets/{petId}", path_values: {petId: "$captures.pet_id"}}
+```
+
+这段不是手写的，是真实模型看过规范后自己规划出来的（7 步 / 66159 token）：它认出 `POST /pets`
+能造出 `GET /pets/{petId}` 需要的 id，并主动声明了捕获与依赖。执行 15/15 通过，其中包含一条
+**"写进去的名字能原样读回来"**的往返断言——这才是链式测试真正的价值。
+
+三条约束让这条路不会变成新的风险面：
+
+- **值只能来自同一次运行内的前序响应。** 捕获路径必须在该响应声明的契约里真实存在，校验器会去
+  契约里核对，编造会被拒绝。引用一个没有前置用例产出的变量同样被拒绝。
+- **捕获值来自被测目标，所以按不可信输入处理。** 它要过和普通参数一样的校验（长度、控制字符、
+  路径穿越）。有测试专门验证"目标返回的路径穿越串不会流进下一个请求"。
+- **创建数据必须显式开启。** 用例要 `write: true` + `creates_data: true`，配置要 `allow_write: true`，
+  两者缺一即拒（退出码 4）。捕获到敏感字段时它是 `[REDACTED]`，引用它会成为一次**显式拒绝**，
+  而不是把占位符当真值发出去。
+
+第一版**不自动清理**：删除比创建更高危。链式用例会在被测目标上留下数据，报告里会列出本次创建的
+内容，由人处理。
 
 ## 规划器对比（项目最核心的数字）
 
@@ -293,6 +333,8 @@ cases/petstore.yaml  示例用例文件（含人工补写的路径参数用例�
 - 只支持本地 OpenAPI 文件，不读取代码仓库或自然语言需求。
 - 嵌套 `$ref` 仅打包 `#/components/schemas/*`；指向其他位置的引用会导致「无法判定」，而不是静默通过。
 - 请求体只支持 JSON；表单、multipart、二进制上传暂不支持。
+- 链式用例支持"创建→读取"这类依赖，但**不支持会话/登录态维持**，也没有自动清理创建出来的数据。
+- 捕获值只支持标量（字符串、数字、布尔）；从响应里取对象或数组暂不支持。
 - 尚无语义化的失败归因（诊断循环在 M3），报告只列出断言层面的观察事实。
 - 响应声明的 media type 是 JSON 但实际不是 JSON 时，契约无法校验，结论是「无法判定」而不是「失败」。这是刻意的边界（无法求值只能是无法判定），代价是这类违约需要人再看一眼。
 - token 成本只测过一个模型（`deepseek-v4-flash`）在一次 9 个 Operation 的生成上的消耗，不代表其他模型或规模。

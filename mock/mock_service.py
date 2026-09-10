@@ -10,18 +10,13 @@ from typing import Any
 
 from http_kit import MockResponse, Service, run_forever
 
-SCENARIO_VERSION = "1.0.0"
+SCENARIO_VERSION = "1.1.0"
 SCENARIOS = ("conformant", "violating")
 
 _PETS = {1: "Ada", 2: "Bao"}
-
-
-def _pet(pid: int) -> dict[str, object]:
-    return {
-        "id": pid,
-        "name": _PETS[pid],
-        "owner": {"email": f"owner{pid}@example.com", "token": "mock-secret-token"},
-    }
+#: 探针槽：POST 写进这个固定 id，于是"创建→读取"能闭环，而响应仍可复现——
+#: 真实 API 会为新资源分配新 id，那种行为在基准里无法保证同一场景版本给出相同响应。
+PROBE_SLOT = 1
 
 
 class PetstoreBehaviour:
@@ -30,6 +25,16 @@ class PetstoreBehaviour:
             raise ValueError(f"未知场景: {scenario}")
         self.scenario = scenario
         self.version = SCENARIO_VERSION
+        #: 探针槽被写入的名字；未写入时为 None
+        self._probe_name: str | None = None
+
+    def _pet(self, pid: int) -> dict[str, object]:
+        name = self._probe_name if pid == PROBE_SLOT and self._probe_name else _PETS[pid]
+        return {
+            "id": pid,
+            "name": name,
+            "owner": {"email": f"owner{pid}@example.com", "token": "mock-secret-token"},
+        }
 
     def respond(
         self, method: str, path: str, headers: dict[str, str], body: Any | None
@@ -41,7 +46,7 @@ class PetstoreBehaviour:
             return MockResponse(200, {"status": "ok"})
 
         if method == "GET" and parts == ["pets"]:
-            return MockResponse(200, {"items": [_pet(pid) for pid in sorted(_PETS)], "total": len(_PETS)})
+            return MockResponse(200, {"items": [self._pet(pid) for pid in sorted(_PETS)], "total": len(_PETS)})
 
         if method == "GET" and parts == ["pets", "stats"]:
             total: object = len(_PETS)
@@ -59,12 +64,15 @@ class PetstoreBehaviour:
         if method == "GET" and len(parts) == 2 and parts[0] == "pets":
             if not parts[1].isdigit() or int(parts[1]) not in _PETS:
                 return MockResponse(404, {"error": "pet not found"})
-            return MockResponse(200, _pet(int(parts[1])))
+            return MockResponse(200, self._pet(int(parts[1])))
 
         if method == "POST" and parts == ["pets"]:
             if not isinstance(body, dict) or not body.get("name"):
                 return MockResponse(422, {"error": "name is required"})
-            return MockResponse(201, {"id": 3, "name": str(body["name"])})
+            # 写进探针槽：于是随后 GET /pets/{PROBE_SLOT} 能读回刚写的名字，
+            # 而同一场景版本仍然给出完全相同的响应（请求体来自用例文件，是固定的）
+            self._probe_name = str(body["name"])
+            return MockResponse(201, {"id": PROBE_SLOT, "name": self._probe_name})
 
         return MockResponse(404, {"error": "no route"})
 

@@ -206,11 +206,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
 
     runs: list[TestRun] = []
+    variables: dict[str, str] = {}   # 链式用例的变量袋，只活在这一次运行里（ADR-0004）
     for case in order_cases(cases):
-        run = runner.execute(case=case, operation=by_id[case.operation_id], provenance=provenance)
+        run = runner.execute(
+            case=case, operation=by_id[case.operation_id], provenance=provenance, variables=variables
+        )
+        variables.update(run.captures)
         store.record(run)
         runs.append(run)
         print(f"{run.verdict.value:>12}  {case.id}  ({run.duration_ms}ms, {run.termination_reason.value})")
+        if run.verdict is not Verdict.PASSED and run.observation.error:
+            # 只说"策略拒绝"等于没说：拒绝理由必须出现在人看得见的地方
+            print(f"{'':>14}↳ {run.observation.error[:180]}")
 
     summary = summarize(runs)
     print(
@@ -291,9 +298,15 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         )
 
         def run_once() -> list[TestRun]:
+            # 每轮回放都从空变量袋开始：否则上一轮的数据会渗进下一轮，
+            # "回放一致率"度量的就不再是同一条流程了
             produced: list[TestRun] = []
+            variables: dict[str, str] = {}
             for case in ordered:
-                run = runner.execute(case=case, operation=by_id[case.operation_id], provenance=provenance)
+                run = runner.execute(
+                    case=case, operation=by_id[case.operation_id], provenance=provenance, variables=variables
+                )
+                variables.update(run.captures)
                 store.record(run)
                 produced.append(run)
             return produced

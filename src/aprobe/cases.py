@@ -14,6 +14,43 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .errors import CaseFileError
 from .models import Operation, Specification, TestCase
+from .specification import schema_has_path
+
+#: 引用前序用例捕获值的写法
+CAPTURE_PREFIX = "$captures."
+
+
+def capture_references(case: TestCase) -> set[str]:
+    """这条用例引用了哪些捕获变量。"""
+    found: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, str):
+            if node.startswith(CAPTURE_PREFIX):
+                found.add(node[len(CAPTURE_PREFIX) :])
+        elif isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(case.request.path_values)
+    walk(case.request.query)
+    walk(case.request.body)
+    return found
+
+
+def _transitive_requires(case: TestCase, by_id: dict[str, TestCase]) -> set[str]:
+    collected: set[str] = set()
+    pending = list(case.requires)
+    while pending:
+        current = pending.pop()
+        if current in collected or current not in by_id:
+            continue
+        collected.add(current)
+        pending.extend(by_id[current].requires)
+    return collected
 
 READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -84,6 +121,20 @@ def validate_cases(cases: list[TestCase], specification: Specification | None = 
     if _has_cycle(cases):
         problems.append("requires 之间存在环，无法确定执行顺序")
 
+    # 链式用例（ADR-0004）：依赖与取值必须自洽。缺值时的正确行为是拒绝，不是编一个
+    by_id = {case.id: case for case in cases}
+    for case in cases:
+        if case.creates_data and not case.write:
+            problems.append(f"{case.id}: 声明了 creates_data 却 write=false，创建数据必须是写操作")
+        available: set[str] = set()
+        for dependency in _transitive_requires(case, by_id):
+            available |= set(by_id[dependency].captures)
+        for name in sorted(capture_references(case)):
+            if name not in available:
+                problems.append(
+                    f"{case.id}: 引用了 $captures.{name}，但它不在任何前置用例（requires 闭包）的 captures 里"
+                )
+
     if specification is None:
         return problems
 
@@ -111,6 +162,12 @@ def validate_cases(cases: list[TestCase], specification: Specification | None = 
         extra = sorted(provided - {parameter.name for parameter in operation.parameters if parameter.location == "path"})
         if extra:
             problems.append(f"{case.id}: 提供了未声明的路径参数 {extra}")
+        for name, path in sorted(case.captures.items()):
+            if not _capture_path_is_declared(specification, operation, path):
+                problems.append(
+                    f"{case.id}: 捕获 {name} 的路径 {path} 在 {operation.operation_id} "
+                    "任何声明了 JSON 结构的成功响应里都找不到——不许凭空声称能取到这个值"
+                )
         declared_statuses = {response.status for response in operation.responses}
         for assertion in case.assertions:
             if assertion.response is not None and assertion.response not in declared_statuses:
@@ -155,3 +212,17 @@ def order_cases(cases: list[TestCase]) -> list[TestCase]:
         for dependencies in remaining.values():
             dependencies.difference_update(ready)
     return ordered
+
+
+def _capture_path_is_declared(specification: Specification, operation: Operation, path: str) -> bool:
+    """这条取值路径是否存在于该 Operation 声明的某个成功响应里。"""
+    for response in operation.responses:
+        if response.status[:1] not in ("2", "3") or not response.schema_pointer:
+            continue
+        try:
+            schema = specification.schema_document(response.schema_pointer)
+        except ValueError:
+            continue
+        if schema_has_path(schema, path):
+            return True
+    return False

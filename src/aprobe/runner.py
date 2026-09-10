@@ -17,11 +17,12 @@ from typing import Any
 
 import httpx
 
-from .assertions import AssertionEvaluator, decide_verdict
+from .assertions import AssertionEvaluator, decide_verdict, get_json_path
+from .cases import CAPTURE_PREFIX
 from .errors import ConfigError, PolicyDeniedError
 from .models import Operation, Observation, RunProvenance, TestCase, TestRun, Verdict
 from .policy import TargetPolicy
-from .sanitizer import sanitize_headers, sanitize_text, sanitize_value
+from .sanitizer import REDACTED, sanitize_headers, sanitize_text, sanitize_value
 
 _MAX_VALUE_LENGTH = 512
 _SAFE_PARAM_NAME = re.compile(r"^[A-Za-z0-9_.\-\[\]]{1,64}$")
@@ -76,10 +77,40 @@ class CredentialProvider:
         return {self.header: value}
 
 
-def build_request(case: TestCase, operation: Operation, base_url: str) -> BuiltRequest:
+def resolve_captures(value: Any, variables: dict[str, str], label: str) -> Any:
+    """把 `$captures.X` 替换成前序用例捕获到的值。
+
+    捕获值来自**被测目标**，它会流进下一个请求的路径/查询/请求体，所以必须和普通
+    参数走同一套校验（长度、控制字符、路径穿越）——否则我们等于把目标返回的内容
+    当成了可信输入，凭空开了一个注入面。
+
+    脱敏值一律拒绝：把它当真值发出去只会制造一个看起来成功、实际无意义的请求。
+    """
+    if isinstance(value, str) and value.startswith(CAPTURE_PREFIX):
+        name = value[len(CAPTURE_PREFIX) :]
+        if name not in variables:
+            raise PolicyDeniedError(f"{label} 引用了 $captures.{name}，但本次运行还没有捕获到它")
+        captured = variables[name]
+        if captured == REDACTED or captured == "":
+            raise PolicyDeniedError(
+                f"{label} 引用的 $captures.{name} 是脱敏后的值，不能作为请求参数发出（ADR-0004）"
+            )
+        return _check_value(label, captured)
+    if isinstance(value, dict):
+        return {key: resolve_captures(item, variables, f"{label}.{key}") for key, item in value.items()}
+    if isinstance(value, list):
+        return [resolve_captures(item, variables, f"{label}[{index}]") for index, item in enumerate(value)]
+    return value
+
+
+def build_request(
+    case: TestCase, operation: Operation, base_url: str, variables: dict[str, str] | None = None
+) -> BuiltRequest:
     """从 Operation 的路径模板构造请求。用例只能提供值，不能提供路径。"""
+    variables = dict(variables or {})
     path = operation.path
-    for name, value in (case.request.path_values or {}).items():
+    for name, raw in (case.request.path_values or {}).items():
+        value = resolve_captures(raw, variables, f"路径参数 {name}")
         placeholder = "{" + name + "}"
         if placeholder not in path:
             raise PolicyDeniedError(f"路径参数 {name} 不在 Operation 声明的路径中")
@@ -89,7 +120,8 @@ def build_request(case: TestCase, operation: Operation, base_url: str) -> BuiltR
         raise PolicyDeniedError(f"路径参数未全部提供: {missing}")
 
     query_pairs: list[tuple[str, str]] = []
-    for name, value in (case.request.query or {}).items():
+    for name, raw in (case.request.query or {}).items():
+        value = resolve_captures(raw, variables, f"查询参数 {name}")
         if not _SAFE_PARAM_NAME.match(str(name)):
             raise PolicyDeniedError(f"查询参数名非法: {name!r}")
         if isinstance(value, (list, tuple)):
@@ -111,7 +143,7 @@ def build_request(case: TestCase, operation: Operation, base_url: str) -> BuiltR
     if query_pairs:
         url += "?" + "&".join(f"{name}={value}" for name, value in query_pairs)
 
-    body = case.request.body
+    body = resolve_captures(case.request.body, variables, "请求体")
     if body is not None and not isinstance(body, (dict, list)):
         raise PolicyDeniedError("请求体只支持 JSON 对象或数组")
     return BuiltRequest(url=url, method=case.request.method.upper(), headers=headers, json_body=body)
@@ -158,7 +190,13 @@ class TestRunner:
         self.credentials = credentials or CredentialProvider()
         self.environ = environ or {}
 
-    def execute(self, case: TestCase, operation: Operation, provenance: RunProvenance) -> TestRun:
+    def execute(
+        self,
+        case: TestCase,
+        operation: Operation,
+        provenance: RunProvenance,
+        variables: dict[str, str] | None = None,
+    ) -> TestRun:
         from .models import TerminationReason
 
         request_started = datetime.now(timezone.utc)
@@ -180,7 +218,7 @@ class TestRunner:
             )
 
         try:
-            built = build_request(case, operation, provenance.target)
+            built = build_request(case, operation, provenance.target, variables)
         except PolicyDeniedError as exc:
             return denied_run(
                 "请求构造被拒绝",
@@ -226,6 +264,7 @@ class TestRunner:
                 assertion_results=[],
             )
 
+        captured = _extract_captures(case, observation)
         results = self.evaluator.evaluate_all(case.assertions, observation, operation.operation_id)
         verdict, termination = decide_verdict(results)
         return TestRun(
@@ -240,6 +279,7 @@ class TestRunner:
             request=request_record,
             observation=observation,
             assertion_results=results,
+            captures=captured,
         )
 
     def _send(self, built: BuiltRequest, headers: dict[str, str]) -> tuple[Observation | None, str | None]:
@@ -297,4 +337,23 @@ class TestRunner:
         return None, last_error
 
 
-__all__ = ["BuiltRequest", "CredentialProvider", "TestRunner", "build_request", "probe_baseline"]
+def _extract_captures(case: TestCase, observation: Observation) -> dict[str, str]:
+    """按用例声明的路径从**脱敏后**的响应体里取值。取不到就没有，不编造。"""
+    if not case.captures or observation.body_json is None:
+        return {}
+    captured: dict[str, str] = {}
+    for name, path in case.captures.items():
+        hit, value = get_json_path(observation.body_json, path)
+        if hit and isinstance(value, (str, int, float, bool)):
+            captured[name] = str(value)
+    return captured
+
+
+__all__ = [
+    "BuiltRequest",
+    "CredentialProvider",
+    "TestRunner",
+    "build_request",
+    "probe_baseline",
+    "resolve_captures",
+]

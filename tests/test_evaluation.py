@@ -166,7 +166,7 @@ def test_evaluate_scores_the_conformant_baseline(tmp_path, spec_path, cases_path
     assert "判定准确率 | 100.0%" in output
     assert "回放一致率 | 100.0%" in output
     assert "无依据结论 | 0" in output
-    assert "基准：`conformant`（版本 1.0.0）" in output
+    assert "基准：`conformant`（版本 1.1.0）" in output
 
 
 def test_evaluate_detects_the_injected_violation(tmp_path, spec_path, cases_path, violating, capsys) -> None:
@@ -245,7 +245,7 @@ def test_evaluate_exports_machine_readable_result(tmp_path, spec_path, cases_pat
     payload = json.loads(out.read_text(encoding="utf-8"))
     report = payload["report"]
     assert report["metrics"]["accuracy"] == 1.0
-    assert report["scenario_version"] == "1.0.0"
+    assert report["scenario_version"] == "1.1.0"
     assert len(report["outcomes"]) == 7
     assert "comparison" not in payload  # 没有 --against-cases 就不产生对比
 

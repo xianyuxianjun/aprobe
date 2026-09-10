@@ -26,11 +26,15 @@ _TYPE_CHECKS: dict[str, Any] = {
 }
 
 
-def get_json_path(document: Any, path: str) -> tuple[bool, Any]:
-    """受限 JSONPath 取值。返回 (是否命中, 值)。"""
+def parse_json_path(path: str) -> list[str | int]:
+    """受限 JSONPath 的语法解析：`$`、`.key`、`['key']`、`[n]`。
+
+    单独抽出来是为了让"在数据上取值"（本模块）与"在契约里检查路径是否存在"
+    （specification.schema_has_path）共用同一份语法，避免两处各写一遍而慢慢走偏。
+    """
     if not path.startswith("$"):
         raise ValueError(f"JSONPath 必须以 $ 开头: {path!r}")
-    current = document
+    tokens: list[str | int] = []
     index = 1
     while index < len(path):
         char = path[index]
@@ -41,9 +45,7 @@ def get_json_path(document: Any, path: str) -> tuple[bool, Any]:
             key = path[index + 1 : end]
             if not key:
                 raise ValueError(f"JSONPath 段为空: {path!r}")
-            if not isinstance(current, dict) or key not in current:
-                return False, None
-            current = current[key]
+            tokens.append(key)
             index = end
         elif char == "[":
             end = path.find("]", index)
@@ -51,20 +53,30 @@ def get_json_path(document: Any, path: str) -> tuple[bool, Any]:
                 raise ValueError(f"JSONPath 缺少 ]: {path!r}")
             token = path[index + 1 : end].strip()
             if len(token) >= 2 and token[0] in "'\"" and token[-1] == token[0]:
-                key = token[1:-1]
-                if not isinstance(current, dict) or key not in current:
-                    return False, None
-                current = current[key]
+                tokens.append(token[1:-1])
             else:
-                if not isinstance(current, list):
-                    return False, None
                 try:
-                    current = current[int(token)]
-                except (ValueError, IndexError):
-                    return False, None
+                    tokens.append(int(token))
+                except ValueError as exc:
+                    raise ValueError(f"JSONPath 含不支持的语法: {path!r}") from exc
             index = end + 1
         else:
             raise ValueError(f"JSONPath 含不支持的语法: {path!r}")
+    return tokens
+
+
+def get_json_path(document: Any, path: str) -> tuple[bool, Any]:
+    """受限 JSONPath 取值。返回 (是否命中, 值)。"""
+    current = document
+    for token in parse_json_path(path):
+        if isinstance(token, int):
+            if not isinstance(current, list) or token >= len(current) or token < -len(current):
+                return False, None
+            current = current[token]
+        else:
+            if not isinstance(current, dict) or token not in current:
+                return False, None
+            current = current[token]
     return True, current
 
 

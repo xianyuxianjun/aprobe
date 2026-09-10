@@ -300,7 +300,14 @@ class PlanContext:
             return {"accepted": False, "problems": problems}
         if case.id in self._submitted_ids:
             return {"accepted": False, "problems": [f"用例 id 已存在: {case.id}"]}
-        problems = validate_cases([case], self.specification)
+        # 必须在**累积上下文**里校验：链式用例要引用先前提交的前置用例，
+        # 只看单条会把合法的 requires 判成"指向不存在的用例"。
+        accumulated = [*self.existing_cases, *self.submitted, case]
+        problems = [
+            problem
+            for problem in validate_cases(accumulated, self.specification)
+            if problem.startswith(f"{case.id}:")
+        ]
         if problems:
             self.rejected.append(f"{case.id}: {'; '.join(problems)}")
             return {"accepted": False, "problems": problems}
@@ -463,7 +470,20 @@ def _build_specs(context: PlanContext) -> list[ToolSpec]:
                     },
                     "assertions": {"type": "array", "minItems": 1, "items": _ASSERTION_SCHEMA},
                     "requires": {"type": "array", "items": {"type": "string"}},
+                    "captures": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": (
+                            "变量名 → 受限 JSONPath，从**本用例自己的响应体**里取值，供后续用例用 "
+                            "$captures.<名字> 引用。路径必须在该 Operation 声明的成功响应里真实存在，"
+                            "校验器会去契约里核对，编造会被拒绝。"
+                        ),
+                    },
                     "write": {"type": "boolean"},
+                    "creates_data": {
+                        "type": "boolean",
+                        "description": "本用例会在被测目标上留下数据。必须同时 write=true，且只有人显式开启才执行。",
+                    },
                 },
                 "required": ["id", "operation_id", "request", "assertions"],
                 "additionalProperties": False,

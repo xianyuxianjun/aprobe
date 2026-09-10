@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import enum
+import re
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -296,7 +297,21 @@ class TestCase(BaseModel):
     assertions: list[Assertion] = Field(default_factory=list)
     requires: list[str] = Field(default_factory=list)
     write: bool = False
+    #: 变量名 → 受限 JSONPath，从**本用例自己的响应体**里取值，供后续用例引用（见 ADR-0004）
+    captures: dict[str, str] = Field(default_factory=dict)
+    #: 这条用例会在被测目标上留下数据。它必须同时是 write，且只有人显式开启才执行。
+    creates_data: bool = False
     origin: Literal["deterministic", "agent", "human"] = "deterministic"
+
+    @field_validator("captures")
+    @classmethod
+    def _check_captures(cls, value: dict[str, str]) -> dict[str, str]:
+        for name, path in value.items():
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name):
+                raise ValueError(f"捕获变量名必须是小写字母开头、仅含小写字母数字下划线: {name!r}")
+            if not isinstance(path, str) or not path.startswith("$"):
+                raise ValueError(f"捕获 {name} 的路径必须是受限 JSONPath: {path!r}")
+        return value
 
 
 class Observation(BaseModel):
@@ -334,6 +349,8 @@ class TestRun(BaseModel):
     request: dict[str, Any] = Field(default_factory=dict)
     observation: Observation = Field(default_factory=Observation)
     assertion_results: list[AssertionResult] = Field(default_factory=list)
+    #: 本次运行实际捕获到的变量（取自脱敏后的响应体）。没捕获到就是没有，不编造。
+    captures: dict[str, str] = Field(default_factory=dict)
     provenance: RunProvenance = Field(default_factory=RunProvenance)
 
 

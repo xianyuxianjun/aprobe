@@ -83,6 +83,49 @@ def _collect_component_refs(node: Any, schemas: dict[str, Any], found: set[str])
             _collect_component_refs(item, schemas, found)
 
 
+def _deref(node: Any, root: dict[str, Any]) -> Any:
+    """把 `#/$defs/X` 形式的引用解析一层（bundle_local_refs 产出的就是这种）。"""
+    seen: set[str] = set()
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        ref = node["$ref"]
+        if not ref.startswith("#/$defs/") or ref in seen:
+            return node
+        seen.add(ref)
+        name = ref[len("#/$defs/") :].replace("~1", "/").replace("~0", "~")
+        defs = root.get("$defs")
+        if not isinstance(defs, dict) or name not in defs:
+            return node
+        node = defs[name]
+    return node
+
+
+def schema_has_path(schema: dict[str, Any], path: str) -> bool:
+    """契约里是否存在这条取值路径。
+
+    这是"捕获路径不许编造"的执行者：模型声称能从创建响应里取到 `$.id` 时，
+    我们不去问它，而是去契约里走一遍 properties / items。
+    """
+    from .assertions import parse_json_path
+
+    try:
+        tokens = parse_json_path(path)
+    except ValueError:
+        return False
+    node: Any = schema
+    for token in tokens:
+        node = _deref(node, schema)
+        if not isinstance(node, dict):
+            return False
+        if isinstance(token, int):
+            node = node.get("items")
+        else:
+            properties = node.get("properties")
+            if not isinstance(properties, dict) or token not in properties:
+                return False
+            node = properties[token]
+    return True
+
+
 def resolve_pointer(document: Any, pointer: str) -> Any:
     """解析 JSON Pointer。`#` 与空字符串都表示文档根。"""
     if pointer in ("", "#"):
